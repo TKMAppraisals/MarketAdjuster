@@ -1,11 +1,8 @@
 # MarketAdjuster - Windows Install/Update Script
-# 
-# USAGE: Your tester opens PowerShell and pastes this ONE command:
 #
-#   irm https://raw.githubusercontent.com/YOUR_USERNAME/MarketAdjuster/main/install_windows.ps1 | iex
+# USAGE: Open PowerShell and paste:
 #
-# Or if not using GitHub, they can just double-click this file:
-#   Right-click > Run with PowerShell
+#   irm https://raw.githubusercontent.com/TKMAppraisals/MarketAdjuster/main/install_windows.ps1 | iex
 #
 
 $ErrorActionPreference = "Stop"
@@ -15,7 +12,6 @@ $VENV_DIR = "$INSTALL_DIR\venv"
 $APP_DIR = "$INSTALL_DIR\app"
 $DESKTOP = [Environment]::GetFolderPath("Desktop")
 
-# GitHub raw URL - UPDATE THIS to your repo
 $REPO_BASE = "https://raw.githubusercontent.com/TKMAppraisals/MarketAdjuster/main"
 
 Write-Host ""
@@ -24,7 +20,6 @@ Write-Host "   MarketAdjuster - Install / Update" -ForegroundColor Cyan
 Write-Host "  ============================================" -ForegroundColor Cyan
 Write-Host ""
 
-# Detect install vs update
 if (Test-Path "$APP_DIR\app.py") {
     Write-Host "  Updating existing installation..." -ForegroundColor Yellow
     $MODE = "UPDATE"
@@ -87,7 +82,7 @@ New-Item -ItemType Directory -Force -Path $APP_DIR | Out-Null
 Write-Host "  Downloading latest app files..." -ForegroundColor White
 
 $files = @(
-    @{url="$REPO_BASE/market_condition_app_v4_15_premium_plus.py"; dest="$APP_DIR\_source.py"},
+    @{url="$REPO_BASE/market_condition_app_v4_15_premium_plus.py"; dest="$APP_DIR\app.py"},
     @{url="$REPO_BASE/MarketAdjuster_macOS_512.png"; dest="$APP_DIR\MarketAdjuster_macOS_512.png"},
     @{url="$REPO_BASE/requirements.txt"; dest="$APP_DIR\requirements.txt"},
     @{url="$REPO_BASE/app_icon.ico"; dest="$INSTALL_DIR\app_icon.ico"}
@@ -105,27 +100,6 @@ foreach ($f in $files) {
         }
     }
 }
-
-# ---- Compile to bytecode and remove source ----
-Write-Host "  Compiling application..." -ForegroundColor White
-& $PYTHON_CMD @PYTHON_ARGS -c "import py_compile,os; py_compile.compile(r'$APP_DIR\_source.py',cfile=r'$APP_DIR\app.pyc',optimize=2); os.remove(r'$APP_DIR\_source.py')"
-
-# Create thin launcher
-@"
-import importlib.util, sys, os
-_d = os.path.dirname(os.path.abspath(__file__))
-_p = os.path.join(_d, "app.pyc")
-if not os.path.exists(_p):
-    for _f in os.listdir(_d):
-        if _f.endswith('.pyc'):
-            _p = os.path.join(_d, _f)
-            break
-if not os.path.exists(_p):
-    raise SystemExit("Application files not found. Please reinstall.")
-_s = importlib.util.spec_from_file_location("__mp__", _p)
-_m = importlib.util.module_from_spec(_s)
-_s.loader.exec_module(_m)
-"@ | Out-File -FilePath "$APP_DIR\app.py" -Encoding UTF8
 
 # ---- Create venv ----
 Write-Host ""
@@ -146,17 +120,42 @@ Write-Host "[4/5] Installing dependencies (may take 2-3 min)..." -ForegroundColo
 Write-Host ""
 Write-Host "[5/5] Creating desktop shortcut..." -ForegroundColor White
 
+# Launcher bat - visible window so errors can be seen, auto-opens browser
 @"
 @echo off
 title MarketAdjuster
 cd /d "$APP_DIR"
 call "$VENV_DIR\Scripts\activate.bat"
-"$VENV_DIR\Scripts\streamlit.exe" run app.py --server.headless true --browser.gatherUsageStats false
+
+echo Starting MarketAdjuster...
+echo.
+
+REM Check if already running on any port
+netstat -ano 2>nul | findstr ":8501.*LISTENING" >nul 2>&1
+if %ERRORLEVEL% equ 0 (
+    echo MarketAdjuster is already running.
+    start http://localhost:8501
+    timeout /t 3 >nul
+    exit /b 0
+)
+
+REM Open browser after 5 seconds
+start /b cmd /c "timeout /t 5 /nobreak >nul && start http://localhost:8501"
+
+REM Run streamlit
+"$VENV_DIR\Scripts\streamlit.exe" run app.py --server.headless true --browser.gatherUsageStats false --server.port 8501
+
+REM If we get here, streamlit exited
+echo.
+echo MarketAdjuster has stopped.
+echo If this was unexpected, check for errors above.
+pause
 "@ | Out-File -FilePath "$INSTALL_DIR\Launch_MarketAdjuster.bat" -Encoding ASCII
 
+# VBS wrapper - minimized window (not hidden, so user can find it if needed)
 @"
 Set WshShell = CreateObject("WScript.Shell")
-WshShell.Run chr(34) & "$INSTALL_DIR\Launch_MarketAdjuster.bat" & chr(34), 0
+WshShell.Run chr(34) & "$INSTALL_DIR\Launch_MarketAdjuster.bat" & chr(34), 7
 Set WshShell = Nothing
 "@ | Out-File -FilePath "$INSTALL_DIR\Launch_MarketAdjuster.vbs" -Encoding ASCII
 

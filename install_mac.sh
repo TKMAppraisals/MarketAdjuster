@@ -52,38 +52,10 @@ mkdir -p "$APP_DIR"
 # ---- Download latest files ----
 echo ""
 echo "[3/6] Downloading latest app files..."
-curl -sL "$REPO_BASE/market_condition_app_v4_15_premium_plus.py" -o "$APP_DIR/_source.py"
+curl -sL "$REPO_BASE/market_condition_app_v4_15_premium_plus.py" -o "$APP_DIR/app.py"
 curl -sL "$REPO_BASE/MarketAdjuster_macOS_512.png" -o "$APP_DIR/MarketAdjuster_macOS_512.png"
 curl -sL "$REPO_BASE/requirements.txt" -o "$APP_DIR/requirements.txt"
 curl -sL "$REPO_BASE/app_icon.png" -o "$APP_DIR/app_icon.png"
-
-# ---- Compile to bytecode and remove source ----
-echo "  Compiling application..."
-$PYTHON_CMD -c "
-import py_compile, os
-src = '$APP_DIR/_source.py'
-pyc = '$APP_DIR/app.pyc'
-py_compile.compile(src, cfile=pyc, optimize=2)
-os.remove(src)
-print('  Compiled successfully')
-"
-
-# Create thin launcher that streamlit can run
-cat > "$APP_DIR/app.py" << 'PYLAUNCHER'
-import importlib.util, sys, os
-_d = os.path.dirname(os.path.abspath(__file__))
-_p = os.path.join(_d, "app.pyc")
-if not os.path.exists(_p):
-    for _f in os.listdir(_d):
-        if _f.endswith('.pyc'):
-            _p = os.path.join(_d, _f)
-            break
-if not os.path.exists(_p):
-    raise SystemExit("Application files not found. Please reinstall.")
-_s = importlib.util.spec_from_file_location("__mp__", _p)
-_m = importlib.util.module_from_spec(_s)
-_s.loader.exec_module(_m)
-PYLAUNCHER
 
 # ---- Virtual environment ----
 echo ""
