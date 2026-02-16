@@ -52,10 +52,38 @@ mkdir -p "$APP_DIR"
 # ---- Download latest files ----
 echo ""
 echo "[3/6] Downloading latest app files..."
-curl -sL "$REPO_BASE/market_condition_app_v4_15_premium_plus.py" -o "$APP_DIR/app.py"
+curl -sL "$REPO_BASE/market_condition_app_v4_15_premium_plus.py" -o "$APP_DIR/_source.py"
 curl -sL "$REPO_BASE/MarketAdjuster_macOS_512.png" -o "$APP_DIR/MarketAdjuster_macOS_512.png"
 curl -sL "$REPO_BASE/requirements.txt" -o "$APP_DIR/requirements.txt"
 curl -sL "$REPO_BASE/app_icon.png" -o "$APP_DIR/app_icon.png"
+
+# ---- Compile to bytecode and remove source ----
+echo "  Compiling application..."
+$PYTHON_CMD -c "
+import py_compile, os
+src = '$APP_DIR/_source.py'
+pyc = '$APP_DIR/app.pyc'
+py_compile.compile(src, cfile=pyc, optimize=2)
+os.remove(src)
+print('  Compiled successfully')
+"
+
+# Create thin launcher that streamlit can run
+cat > "$APP_DIR/app.py" << 'PYLAUNCHER'
+import importlib.util, sys, os
+_d = os.path.dirname(os.path.abspath(__file__))
+_p = os.path.join(_d, "app.pyc")
+if not os.path.exists(_p):
+    for _f in os.listdir(_d):
+        if _f.endswith('.pyc'):
+            _p = os.path.join(_d, _f)
+            break
+if not os.path.exists(_p):
+    raise SystemExit("Application files not found. Please reinstall.")
+_s = importlib.util.spec_from_file_location("__mp__", _p)
+_m = importlib.util.module_from_spec(_s)
+_s.loader.exec_module(_m)
+PYLAUNCHER
 
 # ---- Virtual environment ----
 echo ""
@@ -83,8 +111,6 @@ mkdir -p "$APP_BUNDLE/Contents/Resources"
 
 cp "$APP_DIR/app_icon.png" "$APP_BUNDLE/Contents/Resources/app_icon.png" 2>/dev/null
 
-# LSUIElement=1 prevents the app from showing in the Dock while running
-# LSBackgroundOnly prevents the bounce-loop issue
 cat > "$APP_BUNDLE/Contents/Info.plist" << PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -108,8 +134,6 @@ cat > "$APP_BUNDLE/Contents/Info.plist" << PLIST
 </plist>
 PLIST
 
-# The executable: opens Terminal to run streamlit so the user can see output
-# and close it properly. This avoids the invisible-crash-bounce-loop.
 cat > "$APP_BUNDLE/Contents/MacOS/MarketAdjuster" << 'EXEC'
 #!/bin/bash
 
@@ -118,56 +142,47 @@ VENV_DIR="$INSTALL_DIR/venv"
 APP_DIR="$INSTALL_DIR/app"
 LOG_FILE="$INSTALL_DIR/launch.log"
 
-# Ensure PATH includes common Python locations
 export PATH="/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:$HOME/.local/bin:$PATH"
 
-# Activate virtual environment
 if [ -f "$VENV_DIR/bin/activate" ]; then
     source "$VENV_DIR/bin/activate"
 else
-    osascript -e 'display dialog "MarketAdjuster environment not found.\nPlease reinstall by running the install command in Terminal." buttons {"OK"} default button "OK" with icon caution with title "MarketAdjuster"'
+    osascript -e 'display dialog "MarketAdjuster environment not found. Please reinstall." buttons {"OK"} default button "OK" with icon caution with title "MarketAdjuster"'
     exit 1
 fi
 
 cd "$APP_DIR"
 
-# Check if streamlit is available
 if ! command -v streamlit &>/dev/null; then
     osascript -e 'display dialog "Streamlit not found. Please reinstall MarketAdjuster." buttons {"OK"} default button "OK" with icon caution with title "MarketAdjuster"'
     exit 1
 fi
 
-# Check if already running
 if lsof -i :8501 &>/dev/null; then
     open "http://localhost:8501"
     exit 0
 fi
 
-# Launch streamlit in the background, open browser
 streamlit run app.py --server.headless true --browser.gatherUsageStats false > "$LOG_FILE" 2>&1 &
 STREAMLIT_PID=$!
 
-# Wait for streamlit to start, then open browser
 sleep 4
 if kill -0 $STREAMLIT_PID 2>/dev/null; then
     open "http://localhost:8501"
-    # Keep running until streamlit exits
     wait $STREAMLIT_PID
 else
-    osascript -e 'display dialog "MarketAdjuster failed to start.\nCheck the log at ~/Applications/MarketAdjuster/launch.log" buttons {"OK"} default button "OK" with icon caution with title "MarketAdjuster"'
+    osascript -e 'display dialog "MarketAdjuster failed to start. Check ~/Applications/MarketAdjuster/launch.log" buttons {"OK"} default button "OK" with icon caution with title "MarketAdjuster"'
     exit 1
 fi
 EXEC
 chmod +x "$APP_BUNDLE/Contents/MacOS/MarketAdjuster"
 
-# Also create a simple shell script launcher as backup
 cat > "$INSTALL_DIR/launch.sh" << 'LAUNCHER'
 #!/bin/bash
 INSTALL_DIR="$HOME/Applications/MarketAdjuster"
 export PATH="/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:$HOME/.local/bin:$PATH"
 source "$INSTALL_DIR/venv/bin/activate"
 cd "$INSTALL_DIR/app"
-# If already running, just open browser
 if lsof -i :8501 &>/dev/null; then
     open "http://localhost:8501"
 else
