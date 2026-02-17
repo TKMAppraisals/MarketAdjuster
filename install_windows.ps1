@@ -34,13 +34,11 @@ Write-Host "[1/5] Checking for Python..." -ForegroundColor White
 $PYTHON_CMD = $null
 $PYTHON_ARGS = @()
 
-# Try py launcher
 try { 
     $ver = & py -3 --version 2>&1
     if ($LASTEXITCODE -eq 0) { $PYTHON_CMD = "py"; $PYTHON_ARGS = @("-3"); Write-Host "  Found: $ver" -ForegroundColor Green }
 } catch {}
 
-# Try python3
 if (-not $PYTHON_CMD) {
     try {
         $ver = & python3 --version 2>&1
@@ -48,7 +46,6 @@ if (-not $PYTHON_CMD) {
     } catch {}
 }
 
-# Try python (verify it's real)
 if (-not $PYTHON_CMD) {
     try {
         & python -c "import sys" 2>&1 | Out-Null
@@ -120,49 +117,59 @@ Write-Host "[4/5] Installing dependencies (may take 2-3 min)..." -ForegroundColo
 Write-Host ""
 Write-Host "[5/5] Creating desktop shortcut..." -ForegroundColor White
 
-# Launcher bat - visible window so errors can be seen, auto-opens browser
+# PowerShell launcher script - runs completely hidden, opens browser automatically
 @"
-@echo off
-title MarketAdjuster
-cd /d "$APP_DIR"
-call "$VENV_DIR\Scripts\activate.bat"
+`$VENV = "$VENV_DIR"
+`$APP = "$APP_DIR"
 
-echo Starting MarketAdjuster...
-echo.
+# Check if already running
+`$listening = netstat -ano 2>`$null | Select-String ":8501.*LISTENING"
+if (`$listening) {
+    Start-Process "http://localhost:8501"
+    exit
+}
 
-REM Check if already running on any port
-netstat -ano 2>nul | findstr ":8501.*LISTENING" >nul 2>&1
-if %ERRORLEVEL% equ 0 (
-    echo MarketAdjuster is already running.
-    start http://localhost:8501
-    timeout /t 3 >nul
-    exit /b 0
-)
+# Start streamlit completely hidden
+`$proc = Start-Process -FilePath "`$VENV\Scripts\streamlit.exe" ``
+    -ArgumentList "run", "app.py", "--server.headless", "true", "--browser.gatherUsageStats", "false", "--server.port", "8501" ``
+    -WorkingDirectory `$APP ``
+    -WindowStyle Hidden ``
+    -PassThru
 
-REM Open browser after 5 seconds
-start /b cmd /c "timeout /t 5 /nobreak >nul && start http://localhost:8501"
+# Wait for streamlit to be ready, then open browser
+`$timeout = 30
+`$elapsed = 0
+while (`$elapsed -lt `$timeout) {
+    Start-Sleep -Seconds 1
+    `$elapsed++
+    try {
+        `$tcp = New-Object System.Net.Sockets.TcpClient
+        `$tcp.Connect("127.0.0.1", 8501)
+        `$tcp.Close()
+        # Server is ready
+        Start-Process "http://localhost:8501"
+        exit
+    } catch {
+        # Not ready yet
+    }
+}
 
-REM Run streamlit
-"$VENV_DIR\Scripts\streamlit.exe" run app.py --server.headless true --browser.gatherUsageStats false --server.port 8501
+# Fallback: open browser anyway after timeout
+Start-Process "http://localhost:8501"
+"@ | Out-File -FilePath "$INSTALL_DIR\Launch_MarketAdjuster.ps1" -Encoding UTF8
 
-REM If we get here, streamlit exited
-echo.
-echo MarketAdjuster has stopped.
-echo If this was unexpected, check for errors above.
-pause
-"@ | Out-File -FilePath "$INSTALL_DIR\Launch_MarketAdjuster.bat" -Encoding ASCII
-
-# VBS wrapper - minimized window (not hidden, so user can find it if needed)
+# VBS wrapper to run the PowerShell script completely hidden (no window at all)
 @"
-Set WshShell = CreateObject("WScript.Shell")
-WshShell.Run chr(34) & "$INSTALL_DIR\Launch_MarketAdjuster.bat" & chr(34), 7
-Set WshShell = Nothing
+Set objShell = CreateObject("WScript.Shell")
+objShell.Run "powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File ""$INSTALL_DIR\Launch_MarketAdjuster.ps1""", 0, False
+Set objShell = Nothing
 "@ | Out-File -FilePath "$INSTALL_DIR\Launch_MarketAdjuster.vbs" -Encoding ASCII
 
 # Create desktop shortcut
 $WshShell = New-Object -ComObject WScript.Shell
 $Shortcut = $WshShell.CreateShortcut("$DESKTOP\MarketAdjuster.lnk")
-$Shortcut.TargetPath = "$INSTALL_DIR\Launch_MarketAdjuster.vbs"
+$Shortcut.TargetPath = "wscript.exe"
+$Shortcut.Arguments = """$INSTALL_DIR\Launch_MarketAdjuster.vbs"""
 $Shortcut.WorkingDirectory = $APP_DIR
 $Shortcut.Description = "MarketAdjuster"
 $Shortcut.IconLocation = "$INSTALL_DIR\app_icon.ico,0"
