@@ -113,59 +113,66 @@ Write-Host "[4/5] Installing dependencies (may take 2-3 min)..." -ForegroundColo
 & "$VENV_DIR\Scripts\python.exe" -m pip install --upgrade pip --quiet 2>&1 | Out-Null
 & "$VENV_DIR\Scripts\python.exe" -m pip install -r "$APP_DIR\requirements.txt" --quiet
 
-# ---- Create launcher ----
+# ---- Create launcher files ----
 Write-Host ""
 Write-Host "[5/5] Creating desktop shortcut..." -ForegroundColor White
 
-# PowerShell launcher script - runs completely hidden, opens browser automatically
+# Python script that starts streamlit and opens browser (no windows)
 @"
-`$VENV = "$VENV_DIR"
-`$APP = "$APP_DIR"
+import subprocess, sys, os, time, socket
+
+venv = r"$VENV_DIR"
+app_dir = r"$APP_DIR"
+streamlit_exe = os.path.join(venv, "Scripts", "streamlit.exe")
+port = 8501
 
 # Check if already running
-`$listening = netstat -ano 2>`$null | Select-String ":8501.*LISTENING"
-if (`$listening) {
-    Start-Process "http://localhost:8501"
-    exit
-}
+def is_running():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(1)
+        s.connect(("127.0.0.1", port))
+        s.close()
+        return True
+    except:
+        return False
 
-# Start streamlit completely hidden
-`$proc = Start-Process -FilePath "`$VENV\Scripts\streamlit.exe" ``
-    -ArgumentList "run", "app.py", "--server.headless", "true", "--browser.gatherUsageStats", "false", "--server.port", "8501" ``
-    -WorkingDirectory `$APP ``
-    -WindowStyle Hidden ``
-    -PassThru
+if is_running():
+    os.startfile(f"http://localhost:{port}")
+    sys.exit(0)
 
-# Wait for streamlit to be ready, then open browser
-`$timeout = 30
-`$elapsed = 0
-while (`$elapsed -lt `$timeout) {
-    Start-Sleep -Seconds 1
-    `$elapsed++
-    try {
-        `$tcp = New-Object System.Net.Sockets.TcpClient
-        `$tcp.Connect("127.0.0.1", 8501)
-        `$tcp.Close()
-        # Server is ready
-        Start-Process "http://localhost:8501"
-        exit
-    } catch {
-        # Not ready yet
-    }
-}
+# Start streamlit hidden
+CREATE_NO_WINDOW = 0x08000000
+proc = subprocess.Popen(
+    [streamlit_exe, "run", "app.py",
+     "--server.headless", "true",
+     "--browser.gatherUsageStats", "false",
+     "--server.port", str(port)],
+    cwd=app_dir,
+    creationflags=CREATE_NO_WINDOW,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL
+)
 
-# Fallback: open browser anyway after timeout
-Start-Process "http://localhost:8501"
-"@ | Out-File -FilePath "$INSTALL_DIR\Launch_MarketAdjuster.ps1" -Encoding UTF8
+# Wait for server to be ready
+for i in range(30):
+    time.sleep(1)
+    if is_running():
+        os.startfile(f"http://localhost:{port}")
+        sys.exit(0)
 
-# VBS wrapper to run the PowerShell script completely hidden (no window at all)
+# Fallback
+os.startfile(f"http://localhost:{port}")
+"@ | Out-File -FilePath "$INSTALL_DIR\launcher.py" -Encoding UTF8
+
+# VBS that runs the Python launcher with no visible window
 @"
 Set objShell = CreateObject("WScript.Shell")
-objShell.Run "powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File ""$INSTALL_DIR\Launch_MarketAdjuster.ps1""", 0, False
+objShell.Run """$VENV_DIR\Scripts\pythonw.exe"" ""$INSTALL_DIR\launcher.py""", 0, False
 Set objShell = Nothing
 "@ | Out-File -FilePath "$INSTALL_DIR\Launch_MarketAdjuster.vbs" -Encoding ASCII
 
-# Create desktop shortcut
+# Create desktop shortcut pointing to wscript running the VBS
 $WshShell = New-Object -ComObject WScript.Shell
 $Shortcut = $WshShell.CreateShortcut("$DESKTOP\MarketAdjuster.lnk")
 $Shortcut.TargetPath = "wscript.exe"
