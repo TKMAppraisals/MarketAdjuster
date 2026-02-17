@@ -59,7 +59,6 @@ if (-not $PYTHON_CMD) {
 if (-not $PYTHON_CMD) {
     Write-Host ""
     Write-Host "  Python 3.10+ is required but not found." -ForegroundColor Red
-    Write-Host ""
     Write-Host "  Opening Python download page..." -ForegroundColor Yellow
     Write-Host '  IMPORTANT: Check "Add Python to PATH" during install!' -ForegroundColor Yellow
     Write-Host "  Then run this script again." -ForegroundColor Yellow
@@ -117,62 +116,45 @@ Write-Host "[4/5] Installing dependencies (may take 2-3 min)..." -ForegroundColo
 Write-Host ""
 Write-Host "[5/5] Creating desktop shortcut..." -ForegroundColor White
 
-# Python script that starts streamlit and opens browser (no windows)
+# BAT 1: Runs streamlit (this is the process that stays alive)
+# Runs hidden via VBS - user never sees it
 @"
-import subprocess, sys, os, time, socket
+@echo off
+cd /d "$APP_DIR"
+"$VENV_DIR\Scripts\streamlit.exe" run app.py --server.headless true --browser.gatherUsageStats false --server.port 8501
+"@ | Out-File -FilePath "$INSTALL_DIR\streamlit_server.bat" -Encoding ASCII
 
-venv = r"$VENV_DIR"
-app_dir = r"$APP_DIR"
-streamlit_exe = os.path.join(venv, "Scripts", "streamlit.exe")
-port = 8501
+# BAT 2: Opens browser after a delay (runs and exits)
+@"
+@echo off
+REM Wait for streamlit to start
+ping 127.0.0.1 -n 6 >nul
+start http://localhost:8501
+"@ | Out-File -FilePath "$INSTALL_DIR\open_browser.bat" -Encoding ASCII
 
-# Check if already running
-def is_running():
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(1)
-        s.connect(("127.0.0.1", port))
-        s.close()
-        return True
-    except:
-        return False
-
-if is_running():
-    os.startfile(f"http://localhost:{port}")
-    sys.exit(0)
-
-# Start streamlit hidden
-CREATE_NO_WINDOW = 0x08000000
-proc = subprocess.Popen(
-    [streamlit_exe, "run", "app.py",
-     "--server.headless", "true",
-     "--browser.gatherUsageStats", "false",
-     "--server.port", str(port)],
-    cwd=app_dir,
-    creationflags=CREATE_NO_WINDOW,
-    stdout=subprocess.DEVNULL,
-    stderr=subprocess.DEVNULL
-)
-
-# Wait for server to be ready
-for i in range(30):
-    time.sleep(1)
-    if is_running():
-        os.startfile(f"http://localhost:{port}")
-        sys.exit(0)
-
-# Fallback
-os.startfile(f"http://localhost:{port}")
-"@ | Out-File -FilePath "$INSTALL_DIR\launcher.py" -Encoding UTF8
-
-# VBS that runs the Python launcher with no visible window
+# VBS: Launches both bats hidden, opens browser
+# First checks if already running - if so just opens browser
 @"
 Set objShell = CreateObject("WScript.Shell")
-objShell.Run """$VENV_DIR\Scripts\pythonw.exe"" ""$INSTALL_DIR\launcher.py""", 0, False
+
+' Check if streamlit is already running on port 8501
+Set objExec = objShell.Exec("cmd /c netstat -ano 2>nul | findstr "":8501.*LISTENING""")
+strOutput = objExec.StdOut.ReadAll()
+
+If Len(Trim(strOutput)) > 0 Then
+    ' Already running - just open browser
+    objShell.Run "cmd /c start http://localhost:8501", 0, False
+Else
+    ' Start streamlit server (hidden)
+    objShell.Run """$INSTALL_DIR\streamlit_server.bat""", 0, False
+    ' Open browser after delay (hidden)
+    objShell.Run """$INSTALL_DIR\open_browser.bat""", 0, False
+End If
+
 Set objShell = Nothing
 "@ | Out-File -FilePath "$INSTALL_DIR\Launch_MarketAdjuster.vbs" -Encoding ASCII
 
-# Create desktop shortcut pointing to wscript running the VBS
+# Create desktop shortcut
 $WshShell = New-Object -ComObject WScript.Shell
 $Shortcut = $WshShell.CreateShortcut("$DESKTOP\MarketAdjuster.lnk")
 $Shortcut.TargetPath = "wscript.exe"
