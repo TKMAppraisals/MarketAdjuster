@@ -62,6 +62,29 @@ else {
 
 Set-Location $repoDir
 
+# --- Choose the app entrypoint ---
+$appCandidates = @(
+    "market_condition_app_v4_15_premium_plus.py",
+    "market_adjustments_app.py",
+    "market_adjustments_app_v2.py",
+    "app.py"
+)
+
+$app = $null
+foreach ($c in $appCandidates) {
+    if (Test-Path (Join-Path $PWD $c)) { $app = $c; break }
+}
+
+if (-not $app) {
+    Write-Host "Could not find an app entrypoint. Looked for:" -ForegroundColor Red
+    $appCandidates | ForEach-Object { Write-Host ("  - " + $_) -ForegroundColor Red }
+    Write-Host "Files in repo root:" -ForegroundColor Yellow
+    Get-ChildItem -File | Select-Object -ExpandProperty Name | ForEach-Object { Write-Host ("  - " + $_) -ForegroundColor Yellow }
+    throw "No Streamlit app file found in repo root."
+}
+
+Write-Host ("Using app file: {0}" -f $app) -ForegroundColor Green
+
 # --- Create virtual environment ---
 Write-Host "Creating virtual environment..." -ForegroundColor Cyan
 & $pyInfo.Cmd @($pyInfo.Args) -m venv .venv
@@ -80,4 +103,4 @@ Write-Host "Installing requirements..." -ForegroundColor Cyan
 
 # --- Launch app ---
 Write-Host "Launching Market Adjuster..." -ForegroundColor Cyan
-& $venvPy -m streamlit run market_adjustments_app.py
+& $venvPy -m streamlit run $app
