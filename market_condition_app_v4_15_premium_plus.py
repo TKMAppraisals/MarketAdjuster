@@ -2764,9 +2764,9 @@ def main():
                     if abs(adj_pct) < 0.1:
                         return '<span class="vq-badge vq-badge-stable">Stable</span>'
                     elif adj_pct > 0:
-                        return f'<span class="vq-badge vq-badge-up">+{adj_pct:.1f}%</span>'
+                        return f'<span class="vq-badge vq-badge-up">+{adj_pct:.2f}%</span>'
                     else:
-                        return f'<span class="vq-badge vq-badge-down">{adj_pct:.1f}%</span>'
+                        return f'<span class="vq-badge vq-badge-down">{adj_pct:.2f}%</span>'
 
                 rows_html = ""
                 for _, r in display_out.iterrows():
