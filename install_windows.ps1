@@ -112,49 +112,41 @@ Write-Host "[4/5] Installing dependencies (may take 2-3 min)..." -ForegroundColo
 & "$VENV_DIR\Scripts\python.exe" -m pip install --upgrade pip --quiet 2>&1 | Out-Null
 & "$VENV_DIR\Scripts\python.exe" -m pip install -r "$APP_DIR\requirements.txt" --quiet
 
-# ---- Create launcher files ----
+# ---- Detect default browser ----
 Write-Host ""
 Write-Host "[5/5] Creating desktop shortcut..." -ForegroundColor White
 
-# BAT 1: Runs streamlit (this is the process that stays alive)
-# Runs hidden via VBS - user never sees it
-@"
-@echo off
-cd /d "$APP_DIR"
-"$VENV_DIR\Scripts\streamlit.exe" run app.py --server.headless true --browser.gatherUsageStats false --server.port 8501
-"@ | Out-File -FilePath "$INSTALL_DIR\streamlit_server.bat" -Encoding ASCII
+# Detect which browser command works
+$BROWSER_CMD = "msedge"
+try {
+    $progId = (Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice" -ErrorAction SilentlyContinue).ProgId
+    if ($progId -match "Chrome") { $BROWSER_CMD = "chrome" }
+    elseif ($progId -match "Firefox") { $BROWSER_CMD = "firefox" }
+    elseif ($progId -match "Opera") { $BROWSER_CMD = "opera" }
+    elseif ($progId -match "Brave") { $BROWSER_CMD = "brave" }
+    else { $BROWSER_CMD = "msedge" }
+    Write-Host "  Detected browser: $BROWSER_CMD" -ForegroundColor White
+} catch {
+    Write-Host "  Using default browser: msedge" -ForegroundColor White
+}
 
-# BAT 2: Opens browser after a delay (runs and exits)
-@"
-@echo off
-REM Wait for streamlit to start
-ping 127.0.0.1 -n 6 >nul
-start http://localhost:8501
-"@ | Out-File -FilePath "$INSTALL_DIR\open_browser.bat" -Encoding ASCII
-
-# VBS: Launches both bats hidden, opens browser
-# First checks if already running - if so just opens browser
-@"
-Set objShell = CreateObject("WScript.Shell")
-
-' Check if streamlit is already running on port 8501
-Set objExec = objShell.Exec("cmd /c netstat -ano 2>nul | findstr "":8501.*LISTENING""")
-strOutput = objExec.StdOut.ReadAll()
-
-If Len(Trim(strOutput)) > 0 Then
-    ' Already running - just open browser
-    objShell.Run "cmd /c start http://localhost:8501", 0, False
+# ---- Create VBS launcher ----
+# Everything in one VBS: run streamlit hidden, wait, open browser
+# No .bat files, no PowerShell, no cmd windows
+Set-Content -Path "$INSTALL_DIR\Launch_MarketAdjuster.vbs" -Value @"
+Set s=CreateObject("WScript.Shell")
+Set e=s.Exec("cmd /c netstat -ano 2>nul | findstr "":8501.*LISTENING""")
+o=e.StdOut.ReadAll()
+If Len(Trim(o))>0 Then
+    s.Run "cmd /c start $BROWSER_CMD http://localhost:8501", 0, False
 Else
-    ' Start streamlit server (hidden)
-    objShell.Run """$INSTALL_DIR\streamlit_server.bat""", 0, False
-    ' Open browser after delay (hidden)
-    objShell.Run """$INSTALL_DIR\open_browser.bat""", 0, False
+    s.Run """$VENV_DIR\Scripts\streamlit.exe"" run ""$APP_DIR\app.py"" --server.headless true --browser.gatherUsageStats false --server.port 8501", 0, False
+    WScript.Sleep 7000
+    s.Run "cmd /c start $BROWSER_CMD http://localhost:8501", 0, False
 End If
+"@
 
-Set objShell = Nothing
-"@ | Out-File -FilePath "$INSTALL_DIR\Launch_MarketAdjuster.vbs" -Encoding ASCII
-
-# Create desktop shortcut
+# ---- Create desktop shortcut ----
 $WshShell = New-Object -ComObject WScript.Shell
 $Shortcut = $WshShell.CreateShortcut("$DESKTOP\MarketAdjuster.lnk")
 $Shortcut.TargetPath = "wscript.exe"
