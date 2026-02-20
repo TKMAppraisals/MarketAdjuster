@@ -73,60 +73,16 @@ source "$VENV_DIR/bin/activate"
 pip install --upgrade pip --quiet 2>/dev/null
 pip install -r "$APP_DIR/requirements.txt" --quiet
 
-# ---- Create .app bundle ----
+# ---- Create .app bundle via AppleScript (avoids macOS "not responding" issue) ----
 echo ""
 echo "[6/6] Creating application..."
 
 APP_BUNDLE="$INSTALL_DIR/MarketAdjuster.app"
-mkdir -p "$APP_BUNDLE/Contents/MacOS"
-mkdir -p "$APP_BUNDLE/Contents/Resources"
 
-cp "$APP_DIR/app_icon.png" "$APP_BUNDLE/Contents/Resources/app_icon.png" 2>/dev/null
+# Remove old bundle if it exists (clears macOS cache issues)
+rm -rf "$APP_BUNDLE" 2>/dev/null
 
-cat > "$APP_BUNDLE/Contents/Info.plist" << PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>CFBundleExecutable</key>
-    <string>MarketAdjuster</string>
-    <key>CFBundleName</key>
-    <string>MarketAdjuster</string>
-    <key>CFBundleIdentifier</key>
-    <string>com.tkm.marketadjuster</string>
-    <key>CFBundleVersion</key>
-    <string>1.0</string>
-    <key>CFBundlePackageType</key>
-    <string>APPL</string>
-    <key>CFBundleIconFile</key>
-    <string>app_icon</string>
-    <key>LSUIElement</key>
-    <true/>
-</dict>
-</plist>
-PLIST
-
-cat > "$APP_BUNDLE/Contents/MacOS/MarketAdjuster" << 'EXEC'
-#!/bin/bash
-# Thin launcher — exits immediately so macOS doesn't think the app is hung.
-# Actual work happens in a background helper script.
-
-INSTALL_DIR="$HOME/Applications/MarketAdjuster"
-HELPER="$INSTALL_DIR/launch_helper.sh"
-
-export PATH="/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:$HOME/.local/bin:$PATH"
-
-if [ -f "$HELPER" ]; then
-    nohup bash "$HELPER" >/dev/null 2>&1 &
-    disown
-else
-    osascript -e 'display dialog "MarketAdjuster files not found. Please reinstall." buttons {"OK"} default button "OK" with icon caution with title "MarketAdjuster"'
-fi
-exit 0
-EXEC
-chmod +x "$APP_BUNDLE/Contents/MacOS/MarketAdjuster"
-
-# Background helper that actually starts Streamlit and opens the browser
+# Create the background helper script
 cat > "$INSTALL_DIR/launch_helper.sh" << 'HELPER'
 #!/bin/bash
 INSTALL_DIR="$HOME/Applications/MarketAdjuster"
@@ -160,8 +116,8 @@ fi
 streamlit run app.py --server.headless true --browser.gatherUsageStats false > "$LOG_FILE" 2>&1 &
 STREAMLIT_PID=$!
 
-# Wait for Streamlit to be ready (poll instead of fixed sleep)
-for i in $(seq 1 20); do
+# Wait for Streamlit to be ready (poll every 0.5s, up to 15s)
+for i in $(seq 1 30); do
     if lsof -i :8501 &>/dev/null; then
         open "http://localhost:8501"
         exit 0
@@ -169,15 +125,28 @@ for i in $(seq 1 20); do
     sleep 0.5
 done
 
-# If we get here, Streamlit didn't start in time
+# Fallback
 if ! kill -0 $STREAMLIT_PID 2>/dev/null; then
     osascript -e 'display dialog "MarketAdjuster failed to start. Check ~/Applications/MarketAdjuster/launch.log" buttons {"OK"} default button "OK" with icon caution with title "MarketAdjuster"'
 else
-    # Still running but port not open yet — give it one more try
     open "http://localhost:8501"
 fi
 HELPER
 chmod +x "$INSTALL_DIR/launch_helper.sh"
+
+# Build the .app using osacompile — this creates a native AppleScript app
+# that macOS treats properly (no "not responding" issue)
+osacompile -o "$APP_BUNDLE" -e "do shell script \"bash '$INSTALL_DIR/launch_helper.sh' &> /dev/null &\""
+
+# Set the custom icon and update Info.plist
+mkdir -p "$APP_BUNDLE/Contents/Resources"
+cp "$APP_DIR/app_icon.png" "$APP_BUNDLE/Contents/Resources/app_icon.png" 2>/dev/null
+
+# Update the plist to hide from Dock and set our bundle ID
+/usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || \
+/usr/libexec/PlistBuddy -c "Set :LSUIElement true" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.tkm.marketadjuster" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null
+/usr/libexec/PlistBuddy -c "Set :CFBundleName MarketAdjuster" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null
 
 cat > "$INSTALL_DIR/launch.sh" << 'LAUNCHER'
 #!/bin/bash
@@ -211,6 +180,10 @@ if command -v sips &>/dev/null && [ -f "$APP_DIR/app_icon.png" ]; then
     sips -z 256 256 "$APP_DIR/app_icon.png" --out "$ICONSET_DIR/icon_128x128@2x.png" 2>/dev/null
     sips -z 512 512 "$APP_DIR/app_icon.png" --out "$ICONSET_DIR/icon_256x256@2x.png" 2>/dev/null
     iconutil -c icns "$ICONSET_DIR" -o "$APP_BUNDLE/Contents/Resources/app_icon.icns" 2>/dev/null
+    # Point the plist to our custom icon instead of the default applet icon
+    /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile app_icon" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null
+    # Remove the default applet.icns
+    rm -f "$APP_BUNDLE/Contents/Resources/applet.icns" 2>/dev/null
 fi
 
 echo ""
