@@ -417,6 +417,25 @@ div[data-baseweb="select"] input::placeholder{
   -webkit-text-fill-color: rgba(17,24,39,.45) !important;
 }
 
+/* Multiselect tag pills — light blue to match accent */
+span[data-baseweb="tag"]{
+  background: rgba(96,165,250,.14) !important;
+  border: 1px solid rgba(96,165,250,.30) !important;
+  border-radius: 8px !important;
+  color: #1E40AF !important;
+}
+span[data-baseweb="tag"] span{
+  color: #1E40AF !important;
+  -webkit-text-fill-color: #1E40AF !important;
+}
+span[data-baseweb="tag"] svg{
+  color: #60A5FA !important;
+  fill: #60A5FA !important;
+}
+span[data-baseweb="tag"]:hover{
+  background: rgba(96,165,250,.22) !important;
+}
+
 /* Dropdown menu */
 ul[role="listbox"]{
   background: var(--surface2) !important;
@@ -1314,7 +1333,7 @@ def render_table_image(
             adj_str = "Stable"
             dollar_str = "—"
         else:
-            adj_str = f"{adj_pct:+.2f}%"
+            adj_str = f"{adj_pct:+.1f}%"
             dollar_str = f"${r['MktAdj$']:+,.0f}"
 
         contract_dt = r["ContractDate"]
@@ -1514,7 +1533,7 @@ negative, or no adjustments depending on their specific contract timing.
         if not applied:
             status_text = "NO adjustment (within minimum time threshold)"
         else:
-            status_text = f"{direction} adjustment of {abs(adj_pct):.2f}%"
+            status_text = f"{direction} adjustment of {abs(adj_pct):.1f}%"
         
         contract_idx_pct = ((contract_idx - 1.0) * 100)
         
@@ -1522,8 +1541,8 @@ negative, or no adjustments depending on their specific contract timing.
 Comparable {comp_num}: {addr}
   Contract Date: {contract_date.strftime('%B %Y')}
   Sale Price: ${sale_price:,.0f}
-  Market Index at Contract: {contract_idx:.4f} ({contract_idx_pct:+.2f}%)
-  Market Index at Effective: {eff_index:.4f} ({((eff_index - 1.0) * 100):+.2f}%)
+  Market Index at Contract: {contract_idx:.4f} ({contract_idx_pct:+.1f}%)
+  Market Index at Effective: {eff_index:.4f} ({((eff_index - 1.0) * 100):+.1f}%)
   Category: {category}
   Adjustment: {status_text}
   Dollar Adjustment: {adj_dollar:+,.0f}
@@ -2614,7 +2633,7 @@ def main():
                             "Address": pdf_table["CompAddress"],
                             "Contract": pdf_table["ContractDate"].astype(str),
                             "Sale": pdf_table["SalePrice"].apply(lambda x: f"${x:,.0f}"),
-                            "Adj %": pdf_table["MktAdjPct"].apply(lambda x: f"{x:+.2f}%"),
+                            "Adj %": pdf_table["MktAdjPct"].apply(lambda x: f"{x:+.1f}%"),
                             "Adj $": pdf_table["MktAdj$"].apply(lambda x: f"${x:+,.0f}"),
                         })
                         pdf_bytes = build_pdf_addendum(
@@ -2764,9 +2783,9 @@ def main():
                     if abs(adj_pct) < 0.1:
                         return '<span class="vq-badge vq-badge-stable">Stable</span>'
                     elif adj_pct > 0:
-                        return f'<span class="vq-badge vq-badge-up">+{adj_pct:.2f}%</span>'
+                        return f'<span class="vq-badge vq-badge-up">+{adj_pct:.1f}%</span>'
                     else:
-                        return f'<span class="vq-badge vq-badge-down">{adj_pct:.2f}%</span>'
+                        return f'<span class="vq-badge vq-badge-down">{adj_pct:.1f}%</span>'
 
                 rows_html = ""
                 for _, r in display_out.iterrows():
