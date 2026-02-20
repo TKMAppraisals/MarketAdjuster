@@ -108,7 +108,27 @@ PLIST
 
 cat > "$APP_BUNDLE/Contents/MacOS/MarketAdjuster" << 'EXEC'
 #!/bin/bash
+# Thin launcher — exits immediately so macOS doesn't think the app is hung.
+# Actual work happens in a background helper script.
 
+INSTALL_DIR="$HOME/Applications/MarketAdjuster"
+HELPER="$INSTALL_DIR/launch_helper.sh"
+
+export PATH="/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin:$HOME/.local/bin:$PATH"
+
+if [ -f "$HELPER" ]; then
+    nohup bash "$HELPER" >/dev/null 2>&1 &
+    disown
+else
+    osascript -e 'display dialog "MarketAdjuster files not found. Please reinstall." buttons {"OK"} default button "OK" with icon caution with title "MarketAdjuster"'
+fi
+exit 0
+EXEC
+chmod +x "$APP_BUNDLE/Contents/MacOS/MarketAdjuster"
+
+# Background helper that actually starts Streamlit and opens the browser
+cat > "$INSTALL_DIR/launch_helper.sh" << 'HELPER'
+#!/bin/bash
 INSTALL_DIR="$HOME/Applications/MarketAdjuster"
 VENV_DIR="$INSTALL_DIR/venv"
 APP_DIR="$INSTALL_DIR/app"
@@ -130,24 +150,34 @@ if ! command -v streamlit &>/dev/null; then
     exit 1
 fi
 
+# If already running, just open the browser
 if lsof -i :8501 &>/dev/null; then
     open "http://localhost:8501"
     exit 0
 fi
 
+# Start Streamlit in background
 streamlit run app.py --server.headless true --browser.gatherUsageStats false > "$LOG_FILE" 2>&1 &
 STREAMLIT_PID=$!
 
-sleep 4
-if kill -0 $STREAMLIT_PID 2>/dev/null; then
-    open "http://localhost:8501"
-    wait $STREAMLIT_PID
-else
+# Wait for Streamlit to be ready (poll instead of fixed sleep)
+for i in $(seq 1 20); do
+    if lsof -i :8501 &>/dev/null; then
+        open "http://localhost:8501"
+        exit 0
+    fi
+    sleep 0.5
+done
+
+# If we get here, Streamlit didn't start in time
+if ! kill -0 $STREAMLIT_PID 2>/dev/null; then
     osascript -e 'display dialog "MarketAdjuster failed to start. Check ~/Applications/MarketAdjuster/launch.log" buttons {"OK"} default button "OK" with icon caution with title "MarketAdjuster"'
-    exit 1
+else
+    # Still running but port not open yet — give it one more try
+    open "http://localhost:8501"
 fi
-EXEC
-chmod +x "$APP_BUNDLE/Contents/MacOS/MarketAdjuster"
+HELPER
+chmod +x "$INSTALL_DIR/launch_helper.sh"
 
 cat > "$INSTALL_DIR/launch.sh" << 'LAUNCHER'
 #!/bin/bash
@@ -159,9 +189,11 @@ if lsof -i :8501 &>/dev/null; then
     open "http://localhost:8501"
 else
     streamlit run app.py --server.headless true --browser.gatherUsageStats false &
-    sleep 4
+    for i in $(seq 1 20); do
+        lsof -i :8501 &>/dev/null && break
+        sleep 0.5
+    done
     open "http://localhost:8501"
-    wait
 fi
 LAUNCHER
 chmod +x "$INSTALL_DIR/launch.sh"
