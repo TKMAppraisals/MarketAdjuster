@@ -1019,6 +1019,53 @@ def compute_iqr_flags_cached(sold_prices: np.ndarray, k: float) -> np.ndarray:
     hi = q3 + k * iqr
     return ((s < lo) | (s > hi)).to_numpy()
 
+
+def compute_trend_iqr_flags(contract_dates: np.ndarray, sold_prices: np.ndarray, k: float):
+    """Trend-following outlier detection.
+
+    Fits a rolling median trend to prices over time, then flags sales whose
+    residual from the trend exceeds k * IQR(residuals).  Also returns the
+    upper/lower bound arrays for plotting so the visual bounds exactly match
+    what is actually flagged.
+
+    Returns: (flags: np.ndarray[bool], trend: np.ndarray, upper: np.ndarray, lower: np.ndarray, dates_sorted: np.ndarray)
+    """
+    df_tmp = pd.DataFrame({
+        "dt": pd.to_datetime(contract_dates),
+        "price": np.asarray(sold_prices, dtype=float),
+    })
+    sort_idx = df_tmp["dt"].argsort().values
+    df_tmp = df_tmp.iloc[sort_idx].reset_index(drop=True)
+
+    n = len(df_tmp)
+    win = max(7, n // 4)
+
+    # Rolling median as the trend
+    trend = df_tmp["price"].rolling(win, center=True, min_periods=3).median()
+    trend = trend.bfill().ffill()
+
+    # Smooth the trend for cleaner bounds
+    smooth_win = max(5, win // 2)
+    trend = trend.rolling(smooth_win, center=True, min_periods=1).mean()
+
+    residuals = df_tmp["price"] - trend
+
+    r_q1 = residuals.quantile(0.25)
+    r_q3 = residuals.quantile(0.75)
+    r_iqr = r_q3 - r_q1
+
+    upper = trend + (r_q3 + k * r_iqr)
+    lower = trend + (r_q1 - k * r_iqr)
+
+    flags_sorted = (df_tmp["price"] > upper) | (df_tmp["price"] < lower)
+
+    # Map flags back to original order
+    reverse_idx = np.empty_like(sort_idx)
+    reverse_idx[sort_idx] = np.arange(n)
+    flags_original = flags_sorted.values[reverse_idx]
+
+    return flags_original, trend.values, upper.values, lower.values, df_tmp["dt"].values
+
 @st.cache_data(show_spinner=False)
 def build_index_cached(
     contract_dates: np.ndarray,
@@ -1910,10 +1957,13 @@ def main():
         
         # Run diagnostics
         if use_iqr:
-            iqr_flags = compute_iqr_flags_cached(df_f["SoldPrice"].to_numpy(), iqr_multiplier)
+            iqr_flags, _trend_line, _trend_upper, _trend_lower, _trend_dates = compute_trend_iqr_flags(
+                df_f["ContractDate"].to_numpy(), df_f["SoldPrice"].to_numpy(), iqr_multiplier
+            )
             df_f["IQR_Outlier"] = iqr_flags
         else:
             df_f["IQR_Outlier"] = False
+            _trend_line = _trend_upper = _trend_lower = _trend_dates = None
         
         if use_cooks:
             df_f = cooks_distance_time_regression(df_f)
@@ -1998,39 +2048,18 @@ def main():
                         trace.marker.opacity = 0.4
                         trace.marker.size = 7
 
-                # Add trend-following IQR outlier bounds
-                if use_iqr:
+                # Add trend-following outlier bounds
+                if use_iqr and _trend_dates is not None:
                     import plotly.graph_objects as go
-                    _prices_s = df_f[["ContractDate", "SoldPrice"]].copy()
-                    _prices_s["ContractDate"] = pd.to_datetime(_prices_s["ContractDate"])
-                    _prices_s = _prices_s.sort_values("ContractDate")
-                    _prices_s["SoldPrice"] = _prices_s["SoldPrice"].astype(float)
-
-                    # Rolling window: ~3 months of data or min 8 points
-                    _win = max(8, len(_prices_s) // 5)
-                    _roll_q1 = _prices_s["SoldPrice"].rolling(_win, center=True, min_periods=3).quantile(0.25)
-                    _roll_q3 = _prices_s["SoldPrice"].rolling(_win, center=True, min_periods=3).quantile(0.75)
-                    _roll_iqr = _roll_q3 - _roll_q1
-                    _roll_hi = _roll_q3 + iqr_multiplier * _roll_iqr
-                    _roll_lo = _roll_q1 - iqr_multiplier * _roll_iqr
-
-                    # Fill NaN edges
-                    _roll_hi = _roll_hi.bfill().ffill()
-                    _roll_lo = _roll_lo.bfill().ffill()
-
-                    # Second smoothing pass to eliminate jumpiness
-                    _smooth_win = max(5, _win // 2)
-                    _roll_hi = _roll_hi.rolling(_smooth_win, center=True, min_periods=1).mean()
-                    _roll_lo = _roll_lo.rolling(_smooth_win, center=True, min_periods=1).mean()
 
                     fig_scatter.add_trace(go.Scatter(
-                        x=_prices_s["ContractDate"], y=_roll_hi,
+                        x=_trend_dates, y=_trend_upper,
                         mode='lines', name='Upper Bound',
                         line=dict(color='rgba(255,59,48,0.3)', width=1.5, shape='spline'),
                         hoverinfo='skip', showlegend=True
                     ))
                     fig_scatter.add_trace(go.Scatter(
-                        x=_prices_s["ContractDate"], y=_roll_lo,
+                        x=_trend_dates, y=_trend_lower,
                         mode='lines', name='Lower Bound',
                         line=dict(color='rgba(255,59,48,0.3)', width=1.5, shape='spline'),
                         hoverinfo='skip', showlegend=True
