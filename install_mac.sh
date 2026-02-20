@@ -138,15 +138,38 @@ chmod +x "$INSTALL_DIR/launch_helper.sh"
 # that macOS treats properly (no "not responding" issue)
 osacompile -o "$APP_BUNDLE" -e "do shell script \"bash '$INSTALL_DIR/launch_helper.sh' &> /dev/null &\""
 
-# Set the custom icon and update Info.plist
+# ---- Set custom icon ----
 mkdir -p "$APP_BUNDLE/Contents/Resources"
-cp "$APP_DIR/app_icon.png" "$APP_BUNDLE/Contents/Resources/app_icon.png" 2>/dev/null
 
-# Update the plist to hide from Dock and set our bundle ID
+# Convert PNG to icns
+if command -v sips &>/dev/null && [ -f "$APP_DIR/app_icon.png" ]; then
+    ICONSET_DIR=$(mktemp -d)/MA.iconset
+    mkdir -p "$ICONSET_DIR"
+    for s in 16 32 64 128 256 512; do
+        sips -z $s $s "$APP_DIR/app_icon.png" --out "$ICONSET_DIR/icon_${s}x${s}.png" 2>/dev/null
+    done
+    cp "$APP_DIR/app_icon.png" "$ICONSET_DIR/icon_512x512@2x.png" 2>/dev/null
+    sips -z 32 32 "$APP_DIR/app_icon.png" --out "$ICONSET_DIR/icon_16x16@2x.png" 2>/dev/null
+    sips -z 64 64 "$APP_DIR/app_icon.png" --out "$ICONSET_DIR/icon_32x32@2x.png" 2>/dev/null
+    sips -z 256 256 "$APP_DIR/app_icon.png" --out "$ICONSET_DIR/icon_128x128@2x.png" 2>/dev/null
+    sips -z 512 512 "$APP_DIR/app_icon.png" --out "$ICONSET_DIR/icon_256x256@2x.png" 2>/dev/null
+    iconutil -c icns "$ICONSET_DIR" -o "$APP_BUNDLE/Contents/Resources/app_icon.icns" 2>/dev/null
+    rm -f "$APP_BUNDLE/Contents/Resources/applet.icns" 2>/dev/null
+fi
+
+# Update Info.plist: custom icon, hide from Dock, set bundle ID
+/usr/libexec/PlistBuddy -c "Set :CFBundleIconFile app_icon" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null
 /usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || \
 /usr/libexec/PlistBuddy -c "Set :LSUIElement true" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null
 /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.tkm.marketadjuster" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null
 /usr/libexec/PlistBuddy -c "Set :CFBundleName MarketAdjuster" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null
+
+# Force macOS to refresh the icon cache for this app
+touch "$APP_BUNDLE"
+touch "$APP_BUNDLE/Contents/Info.plist"
+touch "$APP_BUNDLE/Contents/Resources/app_icon.icns" 2>/dev/null
+# Kill Finder icon cache so the new icon shows immediately
+killall Dock 2>/dev/null
 
 cat > "$INSTALL_DIR/launch.sh" << 'LAUNCHER'
 #!/bin/bash
@@ -166,25 +189,6 @@ else
 fi
 LAUNCHER
 chmod +x "$INSTALL_DIR/launch.sh"
-
-# Convert PNG to icns if possible
-if command -v sips &>/dev/null && [ -f "$APP_DIR/app_icon.png" ]; then
-    ICONSET_DIR=$(mktemp -d)/MA.iconset
-    mkdir -p "$ICONSET_DIR"
-    for s in 16 32 64 128 256 512; do
-        sips -z $s $s "$APP_DIR/app_icon.png" --out "$ICONSET_DIR/icon_${s}x${s}.png" 2>/dev/null
-    done
-    cp "$APP_DIR/app_icon.png" "$ICONSET_DIR/icon_512x512@2x.png" 2>/dev/null
-    sips -z 32 32 "$APP_DIR/app_icon.png" --out "$ICONSET_DIR/icon_16x16@2x.png" 2>/dev/null
-    sips -z 64 64 "$APP_DIR/app_icon.png" --out "$ICONSET_DIR/icon_32x32@2x.png" 2>/dev/null
-    sips -z 256 256 "$APP_DIR/app_icon.png" --out "$ICONSET_DIR/icon_128x128@2x.png" 2>/dev/null
-    sips -z 512 512 "$APP_DIR/app_icon.png" --out "$ICONSET_DIR/icon_256x256@2x.png" 2>/dev/null
-    iconutil -c icns "$ICONSET_DIR" -o "$APP_BUNDLE/Contents/Resources/app_icon.icns" 2>/dev/null
-    # Point the plist to our custom icon instead of the default applet icon
-    /usr/libexec/PlistBuddy -c "Set :CFBundleIconFile app_icon" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null
-    # Remove the default applet.icns
-    rm -f "$APP_BUNDLE/Contents/Resources/applet.icns" 2>/dev/null
-fi
 
 echo ""
 if [ "$MODE" = "UPDATE" ]; then
