@@ -157,18 +157,41 @@ if command -v sips &>/dev/null && [ -f "$APP_DIR/app_icon.png" ]; then
     rm -f "$APP_BUNDLE/Contents/Resources/applet.icns" 2>/dev/null
 fi
 
-# Update Info.plist: custom icon, hide from Dock, set bundle ID
-/usr/libexec/PlistBuddy -c "Set :CFBundleIconFile app_icon" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null
-/usr/libexec/PlistBuddy -c "Add :LSUIElement bool true" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null || \
-/usr/libexec/PlistBuddy -c "Set :LSUIElement true" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null
-/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier com.tkm.marketadjuster" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null
-/usr/libexec/PlistBuddy -c "Set :CFBundleName MarketAdjuster" "$APP_BUNDLE/Contents/Info.plist" 2>/dev/null
+# Overwrite the plist entirely so we control every key
+cat > "$APP_BUNDLE/Contents/Info.plist" << 'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>applet</string>
+    <key>CFBundleName</key>
+    <string>MarketAdjuster</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.tkm.marketadjuster</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleIconFile</key>
+    <string>app_icon</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>WindowState</key>
+    <dict>
+        <key>dividerCollapsed</key>
+        <true/>
+        <key>isVisible</key>
+        <false/>
+    </dict>
+</dict>
+</plist>
+PLIST
 
 # Force macOS to refresh the icon cache for this app
 touch "$APP_BUNDLE"
 touch "$APP_BUNDLE/Contents/Info.plist"
 touch "$APP_BUNDLE/Contents/Resources/app_icon.icns" 2>/dev/null
-# Kill Finder icon cache so the new icon shows immediately
 killall Dock 2>/dev/null
 
 cat > "$INSTALL_DIR/launch.sh" << 'LAUNCHER'
