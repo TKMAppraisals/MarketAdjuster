@@ -10,7 +10,7 @@ $APP_NAME = "MarketAdjuster"
 $INSTALL_DIR = "$env:LOCALAPPDATA\MarketAdjuster"
 $VENV_DIR = "$INSTALL_DIR\venv"
 $APP_DIR = "$INSTALL_DIR\app"
-$DESKTOP = [Environment]::GetFolderPath("Desktop")
+$SHORTCUT_DIR = "$INSTALL_DIR\shortcut"
 
 $REPO_BASE = "https://raw.githubusercontent.com/TKMAppraisals/MarketAdjuster/main"
 
@@ -114,7 +114,7 @@ Write-Host "[4/5] Installing dependencies (may take 2-3 min)..." -ForegroundColo
 
 # ---- Detect default browser ----
 Write-Host ""
-Write-Host "[5/5] Creating desktop shortcut..." -ForegroundColor White
+Write-Host "[5/5] Creating shortcut..." -ForegroundColor White
 
 # Detect which browser command works
 $BROWSER_CMD = "msedge"
@@ -146,9 +146,10 @@ Else
 End If
 "@
 
-# ---- Create desktop shortcut ----
+# ---- Create shortcut in staging folder ----
+New-Item -ItemType Directory -Force -Path $SHORTCUT_DIR | Out-Null
 $WshShell = New-Object -ComObject WScript.Shell
-$Shortcut = $WshShell.CreateShortcut("$DESKTOP\MarketAdjuster.lnk")
+$Shortcut = $WshShell.CreateShortcut("$SHORTCUT_DIR\MarketAdjuster.lnk")
 $Shortcut.TargetPath = "wscript.exe"
 $Shortcut.Arguments = """$INSTALL_DIR\Launch_MarketAdjuster.vbs"""
 $Shortcut.WorkingDirectory = $APP_DIR
@@ -167,9 +168,13 @@ if ($MODE -eq "UPDATE") {
     Write-Host "  ============================================" -ForegroundColor Green
     Write-Host "   Installation Complete!" -ForegroundColor Green
     Write-Host "  ============================================" -ForegroundColor Green
-    Write-Host ""
-    Write-Host "  MarketAdjuster icon is on your Desktop." -ForegroundColor White
-    Write-Host "  Double-click it to launch." -ForegroundColor White
 }
 Write-Host ""
+Write-Host "  A File Explorer window will open with the MarketAdjuster shortcut." -ForegroundColor White
+Write-Host "  Move or copy it to your Desktop, Taskbar, or wherever you'd like." -ForegroundColor White
+Write-Host ""
+
+# Open File Explorer with the shortcut selected
+Start-Process explorer.exe -ArgumentList "/select,`"$SHORTCUT_DIR\MarketAdjuster.lnk`""
+
 Read-Host "  Press Enter to close"

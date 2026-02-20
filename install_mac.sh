@@ -75,9 +75,9 @@ pip install -r "$APP_DIR/requirements.txt" --quiet
 
 # ---- Create .app bundle ----
 echo ""
-echo "[6/6] Creating Desktop application..."
+echo "[6/6] Creating application..."
 
-APP_BUNDLE="$HOME/Desktop/MarketAdjuster.app"
+APP_BUNDLE="$INSTALL_DIR/MarketAdjuster.app"
 mkdir -p "$APP_BUNDLE/Contents/MacOS"
 mkdir -p "$APP_BUNDLE/Contents/Resources"
 
@@ -191,7 +191,11 @@ else
     echo "  ============================================"
     echo "   Installation Complete!"
     echo "  ============================================"
-    echo "  MarketAdjuster app is on your Desktop."
-    echo "  Double-click it to launch."
 fi
 echo ""
+echo "  A Finder window will open with the MarketAdjuster app."
+echo "  Drag it to your Desktop, Dock, or wherever you'd like."
+echo ""
+
+# Open Finder with the .app selected so user can drag it where they want
+open -R "$APP_BUNDLE"
