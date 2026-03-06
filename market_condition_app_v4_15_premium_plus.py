@@ -10,6 +10,7 @@
 #
 # REQUIRED CSV HEADERS:
 #   Address, Zip, Pending Date, Sold Price
+#   Sold Date is optional but preferred for market trend/quarterly calculations.
 
 import io
 import os
@@ -65,6 +66,7 @@ def save_report_to_history(session_state: dict):
         "saved_at": datetime.now().isoformat(),
         "subject_address": session_state.get("subject_address", ""),
         "eff_date": str(session_state.get("eff_date", date.today())),
+        "date_basis": session_state.get("date_basis", ""),
         "settings": session_state.get("settings", {}),
         "excluded_rowids": list(session_state.get("excluded_rowids", set())),
         "selected_comps": session_state.get("selected_comps", []),
@@ -89,9 +91,8 @@ def save_report_to_history(session_state: dict):
             break
 
     if existing_idx is not None:
-        history[existing_idx] = report_data
-    else:
-        history.insert(0, report_data)  # newest first
+        history.pop(existing_idx)
+    history.insert(0, report_data)  # newest first
 
     # Keep max 50 reports
     history = history[:50]
@@ -101,6 +102,7 @@ def load_report_from_history(report_data: dict, session_state):
     """Restore a saved report into session state."""
     session_state["subject_address"] = report_data.get("subject_address", "")
     session_state["eff_date"] = date.fromisoformat(report_data.get("eff_date", str(date.today())))
+    session_state["date_basis"] = report_data.get("date_basis", "Pending Date")
     session_state["settings"] = report_data.get("settings", {})
     session_state["excluded_rowids"] = set(report_data.get("excluded_rowids", []))
     session_state["selected_comps"] = report_data.get("selected_comps", [])
@@ -134,6 +136,89 @@ def delete_report_from_history(report_id: str):
     history = load_history()
     history = [r for r in history if r.get("id") != report_id]
     save_history(history)
+
+
+def _parse_iso_datetime(dt_str: str) -> datetime | None:
+    """Best-effort parser for ISO datetime strings."""
+    try:
+        return datetime.fromisoformat(str(dt_str))
+    except (ValueError, TypeError):
+        return None
+
+
+def _parse_iso_date(d_str: str) -> date | None:
+    """Best-effort parser for ISO date strings."""
+    try:
+        return date.fromisoformat(str(d_str))
+    except (ValueError, TypeError):
+        return None
+
+
+def _build_history_entries(history: list) -> list:
+    """Normalize history records for rendering and filtering."""
+    entries = []
+    for i, report in enumerate(history):
+        addr = (report.get("subject_address", "") or "").strip() or "Unknown"
+        eff_raw = report.get("eff_date", "")
+        saved_raw = report.get("saved_at", "")
+        report_id = report.get("id", f"hist_{i}")
+        n_comps = len(report.get("selected_comps", []))
+
+        saved_dt = _parse_iso_datetime(saved_raw)
+        saved_str = saved_dt.strftime("%b %d, %Y at %I:%M %p") if saved_dt else (saved_raw or "Unknown")
+        saved_month_key = saved_dt.strftime("%Y-%m") if saved_dt else "unknown"
+        saved_month_label = saved_dt.strftime("%B %Y") if saved_dt else "Unknown Saved Date"
+
+        eff_dt = _parse_iso_date(eff_raw)
+        eff_str = eff_dt.strftime("%B %d, %Y") if eff_dt else (eff_raw or "Unknown")
+
+        entries.append(
+            {
+                "report": report,
+                "report_id": report_id,
+                "addr": addr,
+                "eff_dt": eff_dt,
+                "eff_str": eff_str,
+                "saved_dt": saved_dt,
+                "saved_str": saved_str,
+                "saved_month_key": saved_month_key,
+                "saved_month_label": saved_month_label,
+                "n_comps": n_comps,
+                "search_blob": " ".join([addr, eff_str, saved_str]).lower(),
+            }
+        )
+
+    entries.sort(key=lambda e: e["saved_dt"] or datetime.min, reverse=True)
+    return entries
+
+
+def _render_history_row(entry: dict):
+    """Render a single report history row with open/delete actions."""
+    report = entry["report"]
+    report_id = entry["report_id"]
+    n_comps = entry["n_comps"]
+
+    col_info, col_open, col_del = st.columns([5, 1, 0.5])
+    with col_info:
+        st.markdown(
+            f"""
+            <div style="background:var(--surface2); border:1px solid var(--border); border-radius:var(--r-lg); padding:12px 16px; margin-bottom:4px;">
+                <div style="font-size:14px; font-weight:700; color:var(--ink);">{entry["addr"]}</div>
+                <div style="font-size:11px; color:var(--muted); margin-top:2px;">
+                    Effective: {entry["eff_str"]} · {n_comps} comp{'s' if n_comps != 1 else ''} · Saved {entry["saved_str"]}
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with col_open:
+        if st.button("Open", key=f"hist_open_{report_id}", use_container_width=True, type="primary"):
+            load_report_from_history(report, st.session_state)
+            st.rerun()
+    with col_del:
+        if st.button("✕", key=f"hist_del_{report_id}", use_container_width=True):
+            delete_report_from_history(report_id)
+            st.rerun()
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
 
@@ -178,6 +263,7 @@ THEME_COLORS = {
 
 APP_NAME = "MarketAdjuster"
 REQUIRED_COLS = ["Address", "Zip", "Pending Date", "Sold Price"]
+DATE_COLS = ["Sold Date", "Pending Date"]
 
 # ----------------------------
 # Custom CSS for modern UI
@@ -417,25 +503,6 @@ div[data-baseweb="select"] input::placeholder{
   -webkit-text-fill-color: rgba(17,24,39,.45) !important;
 }
 
-/* Multiselect tag pills — light blue to match accent */
-span[data-baseweb="tag"]{
-  background: rgba(96,165,250,.14) !important;
-  border: 1px solid rgba(96,165,250,.30) !important;
-  border-radius: 8px !important;
-  color: #1E40AF !important;
-}
-span[data-baseweb="tag"] span{
-  color: #1E40AF !important;
-  -webkit-text-fill-color: #1E40AF !important;
-}
-span[data-baseweb="tag"] svg{
-  color: #60A5FA !important;
-  fill: #60A5FA !important;
-}
-span[data-baseweb="tag"]:hover{
-  background: rgba(96,165,250,.22) !important;
-}
-
 /* Dropdown menu */
 ul[role="listbox"]{
   background: var(--surface2) !important;
@@ -449,6 +516,17 @@ ul[role="listbox"] *{
 }
 li[role="option"][aria-selected="true"]{
   background: var(--accentSoft) !important;
+}
+[data-testid="stMultiSelect"] [data-baseweb="tag"]{
+  background: #EAF3FF !important;
+  background-color: #EAF3FF !important;
+  border: 1px solid #CFE2FF !important;
+  color: #2F6FD6 !important;
+}
+[data-testid="stMultiSelect"] [data-baseweb="tag"] *{
+  color: #2F6FD6 !important;
+  fill: #2F6FD6 !important;
+  -webkit-text-fill-color: #2F6FD6 !important;
 }
 
 /* Checkboxes / radios */
@@ -806,8 +884,21 @@ def canonicalize_columns(df: pd.DataFrame) -> pd.DataFrame:
     if pend and pend != "Pending Date":
         colmap[pend] = "Pending Date"
 
+    # Sold/closing date (preferred time basis when available)
+    sold_dt = find(
+        "sold date", "sale date", "closed date", "close date", "closing date", "settlement date",
+        "solddate", "saledate", "closedate", "closed_date", "close_date", "closing_date",
+        "sold_date", "sale_date", "settled date", "settled_date", "settle date",
+    )
+    if sold_dt and sold_dt != "Sold Date":
+        colmap[sold_dt] = "Sold Date"
+
     # Sold price
-    price = find("sold price", "sale price", "soldprice", "saleprice", "price", "sold_price", "sale_price")
+    price = find(
+        "sold price", "sale price", "closed price", "close price", "settled price",
+        "soldprice", "saleprice", "closedprice", "closeprice",
+        "sold_price", "sale_price", "closed_price", "close_price", "settled_price",
+    )
     if price and price != "Sold Price":
         colmap[price] = "Sold Price"
 
@@ -945,7 +1036,10 @@ def lookup_index(index_df: pd.DataFrame, target_date: date, index_col: str):
         return float(row.iloc[0][index_col]), m, "exact"
     prior = index_df[index_df["Month"] <= m].sort_values("Month")
     if prior.empty:
-        return np.nan, None, "no_prior"
+        # If the target date predates available index history, use the first
+        # available month so older comps still receive a computable adjustment.
+        first = index_df.sort_values("Month").iloc[0]
+        return float(first[index_col]), first["Month"], "earliest"
     used_month = prior.iloc[-1]["Month"]
     return float(prior.iloc[-1][index_col]), used_month, "prior"
 
@@ -1020,51 +1114,85 @@ def compute_iqr_flags_cached(sold_prices: np.ndarray, k: float) -> np.ndarray:
     return ((s < lo) | (s > hi)).to_numpy()
 
 
-def compute_trend_iqr_flags(contract_dates: np.ndarray, sold_prices: np.ndarray, k: float):
-    """Trend-following outlier detection.
-
-    Fits a rolling median trend to prices over time, then flags sales whose
-    residual from the trend exceeds k * IQR(residuals).  Also returns the
-    upper/lower bound arrays for plotting so the visual bounds exactly match
-    what is actually flagged.
-
-    Returns: (flags: np.ndarray[bool], trend: np.ndarray, upper: np.ndarray, lower: np.ndarray, dates_sorted: np.ndarray)
-    """
-    df_tmp = pd.DataFrame({
-        "dt": pd.to_datetime(contract_dates),
-        "price": np.asarray(sold_prices, dtype=float),
+@st.cache_data(show_spinner=False)
+def compute_trend_band_flags_cached(
+    contract_dates: np.ndarray,
+    sold_prices: np.ndarray,
+    k: float,
+    trend_mode: str = "Smoothed (Recommended)",
+    smooth_points: int = 9,
+) -> Tuple[np.ndarray, pd.DataFrame, float]:
+    """Build a central trend with symmetric +/- bands and return outlier flags."""
+    raw = pd.DataFrame({
+        "ContractDate": pd.to_datetime(contract_dates, errors="coerce"),
+        "SoldPrice": pd.to_numeric(sold_prices, errors="coerce"),
     })
-    sort_idx = df_tmp["dt"].argsort().values
-    df_tmp = df_tmp.iloc[sort_idx].reset_index(drop=True)
+    raw["OrigIdx"] = np.arange(len(raw), dtype=int)
+    raw = raw.dropna(subset=["ContractDate", "SoldPrice"]).copy()
 
-    n = len(df_tmp)
-    win = max(7, n // 4)
+    if raw.empty:
+        return np.zeros(len(contract_dates), dtype=bool), pd.DataFrame(), 0.0
 
-    # Rolling median as the trend
-    trend = df_tmp["price"].rolling(win, center=True, min_periods=3).median()
-    trend = trend.bfill().ffill()
+    d = raw.sort_values("ContractDate").reset_index(drop=True)
+    x_days = (d["ContractDate"] - d["ContractDate"].min()).dt.days.astype(float).to_numpy()
+    y = d["SoldPrice"].astype(float).to_numpy()
 
-    # Smooth the trend for cleaner bounds
-    smooth_win = max(5, win // 2)
-    trend = trend.rolling(smooth_win, center=True, min_periods=1).mean()
+    use_smoothed = str(trend_mode).startswith("Smoothed")
+    if use_smoothed and len(d) >= 3:
+        w = int(smooth_points)
+        w = max(5, min(w, len(d)))
+        if w % 2 == 0:
+            w = w - 1 if w == len(d) else w + 1
+        w = max(3, min(w, len(d) if len(d) % 2 == 1 else max(3, len(d) - 1)))
 
-    residuals = df_tmp["price"] - trend
+        trend_s = pd.Series(y).rolling(
+            window=w,
+            center=True,
+            min_periods=max(3, w // 2)
+        ).median()
+        trend_s = trend_s.interpolate(limit_direction="both")
 
-    r_q1 = residuals.quantile(0.25)
-    r_q3 = residuals.quantile(0.75)
-    r_iqr = r_q3 - r_q1
+        w2 = max(3, w // 2)
+        if w2 % 2 == 0:
+            w2 += 1
+        w2 = min(w2, len(d) if len(d) % 2 == 1 else max(3, len(d) - 1))
+        trend_s = trend_s.rolling(window=max(3, w2), center=True, min_periods=1).mean()
+        trend = trend_s.bfill().ffill().to_numpy(dtype=float)
+    elif len(d) >= 2 and np.ptp(x_days) > 0:
+        slope, intercept = np.polyfit(x_days, y, 1)
+        trend = slope * x_days + intercept
+    else:
+        trend = np.full_like(y, np.nanmedian(y), dtype=float)
 
-    upper = trend + (r_q3 + k * r_iqr)
-    lower = trend + (r_q1 - k * r_iqr)
+    resid = y - trend
+    resid_med = np.nanmedian(resid)
+    mad = np.nanmedian(np.abs(resid - resid_med))
+    sigma = 1.4826 * mad if np.isfinite(mad) else np.nan
+    if not np.isfinite(sigma) or sigma <= 1e-9:
+        sigma = np.nanstd(resid)
+    if not np.isfinite(sigma) or sigma <= 1e-9:
+        sigma = max(1.0, np.nanstd(y) * 0.05)
 
-    flags_sorted = (df_tmp["price"] > upper) | (df_tmp["price"] < lower)
+    # Scale chosen so multiplier ~= "strictness" similar to IQR-style sensitivity.
+    # Smoothed mode gets a wider default band so it is not overly aggressive.
+    base_scale = 1.85 if use_smoothed else 1.35
+    band = float(k) * base_scale * float(sigma)
+    band_floor = float(np.nanmedian(y)) * 0.04 * float(k)
+    band = max(band, band_floor)
+    upper = trend + band
+    lower = trend - band
+    flags_sorted = (y > upper) | (y < lower)
 
-    # Map flags back to original order
-    reverse_idx = np.empty_like(sort_idx)
-    reverse_idx[sort_idx] = np.arange(n)
-    flags_original = flags_sorted.values[reverse_idx]
+    flags_full = np.zeros(len(contract_dates), dtype=bool)
+    flags_full[d["OrigIdx"].to_numpy(dtype=int)] = flags_sorted
 
-    return flags_original, trend.values, upper.values, lower.values, df_tmp["dt"].values
+    band_df = pd.DataFrame({
+        "ContractDate": d["ContractDate"],
+        "TrendCenter": trend,
+        "Upper": upper,
+        "Lower": lower,
+    })
+    return flags_full, band_df, band
 
 @st.cache_data(show_spinner=False)
 def build_index_cached(
@@ -1497,6 +1625,16 @@ def build_narrative(
     trend_lookback: str = "1 Year",
     raw_sales_df: pd.DataFrame = None,
 ) -> str:
+    def _fmt_month_year(d) -> str:
+        if pd.isna(d):
+            return "Unknown"
+        if hasattr(d, "strftime"):
+            return d.strftime("%B %Y")
+        try:
+            return pd.to_datetime(d).strftime("%B %Y")
+        except Exception:
+            return str(d)
+
     # Use pre-computed change if provided; otherwise calculate from full range
     if overall_change_pct is None:
         if not index_df.empty and math_col in index_df.columns:
@@ -1512,13 +1650,13 @@ def build_narrative(
 SUBJECT PROPERTY: {subject_address}
 EFFECTIVE DATE: {eff_date.strftime('%B %d, %Y')}
 
-ANALYSIS PERIOD: {date_start.strftime('%B %Y')} through {date_end.strftime('%B %Y')}
+ANALYSIS PERIOD: {_fmt_month_year(date_start)} through {_fmt_month_year(date_end)}
 
 OVERALL MARKET TREND
 {'-' * 60}
 The overall property value trend for the {trend_lookback.lower()} lookback period is {overall_trend.upper()}.
 Market change during this period was {overall_change_pct:+.2f}%.
-Full data range: {date_start.strftime('%B %Y')} through {date_end.strftime('%B %Y')}.
+Full data range: {_fmt_month_year(date_start)} through {_fmt_month_year(date_end)}.
 
 """
     # Quarterly median price breakdown
@@ -1580,16 +1718,16 @@ negative, or no adjustments depending on their specific contract timing.
         if not applied:
             status_text = "NO adjustment (within minimum time threshold)"
         else:
-            status_text = f"{direction} adjustment of {abs(adj_pct):.1f}%"
+            status_text = f"{direction} adjustment of {abs(adj_pct):.2f}%"
         
         contract_idx_pct = ((contract_idx - 1.0) * 100)
         
         narrative += f"""
 Comparable {comp_num}: {addr}
-  Contract Date: {contract_date.strftime('%B %Y')}
+  Contract Date: {_fmt_month_year(contract_date)}
   Sale Price: ${sale_price:,.0f}
-  Market Index at Contract: {contract_idx:.4f} ({contract_idx_pct:+.1f}%)
-  Market Index at Effective: {eff_index:.4f} ({((eff_index - 1.0) * 100):+.1f}%)
+  Market Index at Contract: {contract_idx:.4f} ({contract_idx_pct:+.2f}%)
+  Market Index at Effective: {eff_index:.4f} ({((eff_index - 1.0) * 100):+.2f}%)
   Category: {category}
   Adjustment: {status_text}
   Dollar Adjustment: {adj_dollar:+,.0f}
@@ -1722,6 +1860,8 @@ def main():
         st.session_state["excluded_rowids"] = set()
     if "selected_comps" not in st.session_state:
         st.session_state["selected_comps"] = []
+    if "date_basis" not in st.session_state:
+        st.session_state["date_basis"] = "Pending Date"
     if "settings" not in st.session_state:
         st.session_state["settings"] = {
             "no_adj_days": 90,
@@ -1732,6 +1872,8 @@ def main():
             "min_sales_per_month": 5,
             "use_iqr": True,
             "iqr_multiplier": 1.0,
+            "diag_trend_mode": "Smoothed (Recommended)",
+            "diag_smooth_points": 9,
             "use_cooks": False,
             "cooks_threshold": float("nan"),
         }
@@ -1804,47 +1946,54 @@ def main():
         if history:
             st.markdown('<div style="margin-top: 40px; border-top: 1px solid var(--border); padding-top: 20px;"></div>', unsafe_allow_html=True)
             st.markdown("#### 📋 Recent Reports")
-            st.caption("Click to reopen a previous report")
+            entries = _build_history_entries(history)
+            search_query = st.text_input(
+                "Search reports",
+                key="hist_search",
+                placeholder="Search by address or date",
+            ).strip()
 
-            for i, report in enumerate(history):
-                addr = report.get("subject_address", "Unknown")
-                eff = report.get("eff_date", "")
-                saved = report.get("saved_at", "")
-                report_id = report.get("id", str(i))
-                n_comps = len(report.get("selected_comps", []))
+            if search_query:
+                q = search_query.lower()
+                entries = [entry for entry in entries if q in entry["search_blob"]]
+                st.caption(f"{len(entries)} result{'s' if len(entries) != 1 else ''} found")
+            else:
+                st.caption("Top 5 most recent reports are shown first. Older reports are grouped by saved month.")
 
-                # Format the saved date nicely
-                try:
-                    saved_dt = datetime.fromisoformat(saved)
-                    saved_str = saved_dt.strftime("%b %d, %Y at %I:%M %p")
-                except (ValueError, TypeError):
-                    saved_str = saved
+            if not entries:
+                st.info("No reports matched your search.")
+            else:
+                recent_entries = entries[:5]
+                older_entries = entries[5:]
 
-                # Format effective date
-                try:
-                    eff_dt = date.fromisoformat(eff)
-                    eff_str = eff_dt.strftime("%B %d, %Y")
-                except (ValueError, TypeError):
-                    eff_str = eff
+                st.markdown(f"##### Most Recent ({len(recent_entries)})")
+                for entry in recent_entries:
+                    _render_history_row(entry)
 
-                col_info, col_open, col_del = st.columns([5, 1, 0.5])
-                with col_info:
-                    st.markdown(f"""
-                    <div style="background:var(--surface2); border:1px solid var(--border); border-radius:var(--r-lg); padding:12px 16px; margin-bottom:4px;">
-                        <div style="font-size:14px; font-weight:700; color:var(--ink);">{addr}</div>
-                        <div style="font-size:11px; color:var(--muted); margin-top:2px;">
-                            Effective: {eff_str} · {n_comps} comp{'s' if n_comps != 1 else ''} · Saved {saved_str}
-                        </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-                with col_open:
-                    if st.button("Open", key=f"hist_open_{report_id}", use_container_width=True, type="primary"):
-                        load_report_from_history(report, st.session_state)
-                        st.rerun()
-                with col_del:
-                    if st.button("✕", key=f"hist_del_{report_id}", use_container_width=True):
-                        delete_report_from_history(report_id)
-                        st.rerun()
+                if older_entries:
+                    st.markdown("##### By Saved Month")
+                    older_month_groups = {}
+                    for entry in older_entries:
+                        grp = older_month_groups.setdefault(
+                            entry["saved_month_key"],
+                            {"label": entry["saved_month_label"], "items": []},
+                        )
+                        grp["items"].append(entry)
+
+                    def _month_sort_key(month_key: str):
+                        if month_key == "unknown":
+                            return (0, 0)
+                        try:
+                            dt = datetime.strptime(month_key, "%Y-%m")
+                            return (dt.year, dt.month)
+                        except ValueError:
+                            return (0, 0)
+
+                    for month_key in sorted(older_month_groups.keys(), key=_month_sort_key, reverse=True):
+                        group = older_month_groups[month_key]
+                        with st.expander(f"📁 {group['label']} ({len(group['items'])})", expanded=False):
+                            for entry in group["items"]:
+                                _render_history_row(entry)
     # ----------------------------
     # ----------------------------
     # STEP 2: Upload Data
@@ -1856,8 +2005,9 @@ def main():
         Upload a CSV file containing comparable sales data with the following columns:
         - **Address** - Property address
         - **Zip** - Zip code
-        - **Pending Date** - Contract/pending date
-        - **Sold Price** - Sale price
+        - **Pending Date** - Contract date (used for comp adjustments)
+        - **Sold Price** - Final sale/settlement price
+        - **Sold Date** *(preferred, used for market trends and quarterly medians)*
         """)
         
         uploaded_file = st.file_uploader(
@@ -1876,10 +2026,40 @@ def main():
                     st.error(f"Missing required columns: {', '.join(missing)}")
                     st.info(f"Available columns: {', '.join(df.columns.tolist())}")
                 else:
-                    df["ContractDate"] = parse_dates_robust(df["Pending Date"])
+                    df["PendingDate"] = parse_dates_robust(df["Pending Date"])
+                    if "Sold Date" in df.columns:
+                        df["SoldDate"] = parse_dates_robust(df["Sold Date"])
+                    else:
+                        df["SoldDate"] = pd.NaT
+
+                    # Market trend timeline uses Sold Date when available; otherwise Pending Date fallback.
+                    has_sold_dates = df["SoldDate"].notna().any()
+                    if has_sold_dates:
+                        st.session_state["date_basis"] = "Sold Date"
+                        df["ContractDate"] = df["SoldDate"]
+                    else:
+                        st.session_state["date_basis"] = "Pending Date (fallback)"
+                        df["ContractDate"] = df["PendingDate"]
+
                     df["SoldPrice"] = parse_money_robust(df["Sold Price"])
-                    df_clean = df.dropna(subset=["ContractDate", "SoldPrice"]).copy()
+
+                    # Treat blank/non-numeric Sold Price rows as listings (exclude from sold analysis).
+                    listing_mask = df["SoldPrice"].isna()
+                    listing_rows = df.loc[listing_mask, ["Address", "Pending Date", "Sold Price"]].copy()
+
+                    # Comp adjustments are based on Pending Date, so keep only rows with valid pending dates.
+                    missing_pending_mask = df["SoldPrice"].notna() & df["PendingDate"].isna()
+                    missing_pending_rows = df.loc[missing_pending_mask, ["Address", "Pending Date", "Sold Price"]].copy()
+
+                    # If Sold Date exists, rows with Sold Price but no Sold Date are excluded from trend analysis.
+                    missing_sold_mask = has_sold_dates & df["SoldPrice"].notna() & df["ContractDate"].isna()
+                    missing_sold_rows = df.loc[missing_sold_mask, ["Address", "Sold Date", "Sold Price"]].copy() if has_sold_dates else pd.DataFrame()
+
+                    df_clean = df.dropna(subset=["ContractDate", "PendingDate", "SoldPrice"]).copy()
                     df_clean["ContractDate"] = pd.to_datetime(df_clean["ContractDate"]).dt.date
+                    df_clean["PendingDate"] = pd.to_datetime(df_clean["PendingDate"]).dt.date
+                    if "SoldDate" in df_clean.columns:
+                        df_clean["SoldDate"] = pd.to_datetime(df_clean["SoldDate"]).dt.date
 
                     # Create a stable RowID once at upload time (do not rebuild later)
                     df_clean = df_clean.reset_index(drop=True)
@@ -1889,6 +2069,23 @@ def main():
                         st.error("No valid data after parsing dates and prices")
                     else:
                         st.success(f"✓ Successfully loaded {len(df_clean)} sales records")
+                        if has_sold_dates:
+                            st.caption("Using Sold Date to calculate market periods and quarterly medians.")
+                        else:
+                            st.warning("Sold Date not found. Using Pending Date fallback for market periods.")
+                        st.caption("Comparable selection and market-condition adjustments use Pending Date.")
+                        if len(listing_rows) > 0:
+                            st.warning(f"Excluded {len(listing_rows)} row(s) with blank/non-numeric Sold Price (treated as listings).")
+                            with st.expander("View excluded listing rows", expanded=False):
+                                st.dataframe(
+                                    listing_rows.rename(columns={"Pending Date": "Date"}),
+                                    use_container_width=True,
+                                    height=min(360, 36 + len(listing_rows) * 28),
+                                )
+                        if len(missing_pending_rows) > 0:
+                            st.warning(f"Excluded {len(missing_pending_rows)} sold row(s) with invalid Pending Date.")
+                        if has_sold_dates and len(missing_sold_rows) > 0:
+                            st.warning(f"Excluded {len(missing_sold_rows)} sold row(s) with missing Sold Date.")
                         
                         col1, col2, col3, col4 = st.columns(4)
                         with col1:
@@ -1935,35 +2132,83 @@ def main():
         df_f = st.session_state["uploaded_data"].copy()
         settings = st.session_state["settings"]
         
-        st.subheader("Data Diagnostics & Outlier Removal")
+        st.subheader("Data Diagnostics & Comparable Screening")
         
         # Settings in sidebar-like expander
-        with st.expander("⚙️ Diagnostic Settings", expanded=False):
+        with st.expander("⚙️ Diagnostic Controls", expanded=False):
             col1, col2, col3 = st.columns(3)
             with col1:
-                use_iqr = st.checkbox("IQR Outlier Detection", value=settings["use_iqr"])
+                use_iqr = st.checkbox(
+                    "Enable Price Outlier Band",
+                    value=bool(settings.get("use_iqr", True)),
+                    help="Flags sales outside the upper/lower price band around the selected trend model."
+                )
                 if use_iqr:
-                    iqr_multiplier = st.slider("IQR Multiplier", 1.0, 3.0, float(settings["iqr_multiplier"]), 0.1)
+                    iqr_multiplier = st.slider(
+                        "Outlier Band Width",
+                        1.0, 3.0, float(settings.get("iqr_multiplier", 1.0)), 0.1,
+                        help="Higher values widen the band and flag fewer outliers."
+                    )
                 else:
                     iqr_multiplier = 1.0
             with col2:
-                use_cooks = st.checkbox("Cook's Distance", value=settings["use_cooks"])
+                use_cooks = st.checkbox(
+                    "Enable Cook's Distance Check",
+                    value=bool(settings.get("use_cooks", False)),
+                    help="Adds a regression influence check to identify high-impact observations."
+                )
             with col3:
-                show_scatter = st.checkbox("Show Interactive Scatter Plot", value=True)
+                show_scatter = st.checkbox(
+                    "Show Interactive Chart",
+                    value=True,
+                    help="Turn off to focus on the diagnostics table and exclusion list."
+                )
+
+            trend_mode = settings.get("diag_trend_mode", "Smoothed (Recommended)")
+            smooth_points = int(settings.get("diag_smooth_points", 9))
+            if use_iqr:
+                c4, c5 = st.columns([1, 1])
+                with c4:
+                    trend_mode = st.selectbox(
+                        "Trend Model",
+                        ["Smoothed Local Trend (Recommended)", "Linear Regression Trend"],
+                        index=0 if str(trend_mode).startswith("Smoothed") else 1,
+                        help="Smoothed follows local movement; regression uses one straight line across all dates."
+                    )
+                with c5:
+                    max_pts = min(31, max(5, len(df_f) if len(df_f) % 2 == 1 else max(5, len(df_f) - 1)))
+                    if smooth_points % 2 == 0:
+                        smooth_points += 1
+                    smooth_points = max(5, min(max_pts, smooth_points))
+                    smooth_points = st.slider(
+                        "Smoothing Window (sales)",
+                        5,
+                        max_pts,
+                        smooth_points,
+                        2,
+                        help="Higher values create a calmer, less sensitive trend line."
+                    )
             
             settings["use_iqr"] = use_iqr
             settings["iqr_multiplier"] = iqr_multiplier
+            settings["diag_trend_mode"] = trend_mode
+            settings["diag_smooth_points"] = int(smooth_points)
             settings["use_cooks"] = use_cooks
         
         # Run diagnostics
+        band_df = pd.DataFrame()
+        band_abs = 0.0
         if use_iqr:
-            iqr_flags, _trend_line, _trend_upper, _trend_lower, _trend_dates = compute_trend_iqr_flags(
-                df_f["ContractDate"].to_numpy(), df_f["SoldPrice"].to_numpy(), iqr_multiplier
+            iqr_flags, band_df, band_abs = compute_trend_band_flags_cached(
+                df_f["ContractDate"].to_numpy(),
+                df_f["SoldPrice"].to_numpy(),
+                iqr_multiplier,
+                trend_mode=str(trend_mode),
+                smooth_points=int(smooth_points),
             )
             df_f["IQR_Outlier"] = iqr_flags
         else:
             df_f["IQR_Outlier"] = False
-            _trend_line = _trend_upper = _trend_lower = _trend_dates = None
         
         if use_cooks:
             df_f = cooks_distance_time_regression(df_f)
@@ -1977,7 +2222,7 @@ def main():
         def _flag_reason(r):
             reasons = []
             if bool(r.get("IQR_Outlier", False)):
-                reasons.append("IQR")
+                reasons.append("Band")
             if bool(r.get("HighLeverage", False)):
                 reasons.append("Price Dev")
             if bool(r.get("HighCooksD", False)):
@@ -1991,6 +2236,13 @@ def main():
             st.info(f"🏴 {flagged_count} records flagged for review")
         with col2:
             st.success(f"✅ {len(df_f) - flagged_count} records passed diagnostics")
+        if use_iqr and band_abs > 0:
+            trend_label = "Smoothed" if str(trend_mode).startswith("Smoothed") else "Linear Regression"
+            smooth_note = f", smoothing {int(smooth_points)} sales" if str(trend_mode).startswith("Smoothed") else ""
+            st.caption(
+                f"Price band model: {trend_label}{smooth_note}. "
+                f"Upper/lower band distance: +/- ${band_abs:,.0f} (width {iqr_multiplier:.1f}x)."
+            )
         
         # Main content area with exclusion sidebar
         col_main, col_sidebar = st.columns([3, 1])
@@ -1998,8 +2250,8 @@ def main():
         with col_main:
             # Interactive scatter plot with click-to-exclude
             if show_scatter:
-                st.markdown("#### Interactive Data Visualization")
-                st.caption("Click on points in the chart to exclude them, or use the table below")
+                st.markdown("#### Interactive Price Distribution")
+                st.caption("Click or lasso points to exclude/include, or use the table below.")
                 
                 plot_df = df_f.copy()
                 plot_df["ContractDateDT"] = pd.to_datetime(plot_df["ContractDate"])
@@ -2032,7 +2284,7 @@ def main():
                     },
                     opacity=0.85,
                     custom_data=["RowID", "Address", "PriceFormatted", "DateFormatted"],
-                    title="Sale Price Distribution Over Time (Click points to exclude)",
+                    title="Sale Price Distribution Over Time",
                 )
                 # Custom hover template — clean and simple
                 for trace in fig_scatter.data:
@@ -2048,22 +2300,41 @@ def main():
                         trace.marker.opacity = 0.4
                         trace.marker.size = 7
 
-                # Add trend-following outlier bounds
-                if use_iqr and _trend_dates is not None:
+                # Add straight trend-center +/- band lines that match outlier flags
+                if use_iqr:
                     import plotly.graph_objects as go
-
-                    fig_scatter.add_trace(go.Scatter(
-                        x=_trend_dates, y=_trend_upper,
-                        mode='lines', name='Upper Bound',
-                        line=dict(color='rgba(255,59,48,0.3)', width=1.5, shape='spline'),
-                        hoverinfo='skip', showlegend=True
-                    ))
-                    fig_scatter.add_trace(go.Scatter(
-                        x=_trend_dates, y=_trend_lower,
-                        mode='lines', name='Lower Bound',
-                        line=dict(color='rgba(255,59,48,0.3)', width=1.5, shape='spline'),
-                        hoverinfo='skip', showlegend=True
-                    ))
+                    if not band_df.empty:
+                        fig_scatter.add_trace(go.Scatter(
+                            x=band_df["ContractDate"], y=band_df["TrendCenter"],
+                            mode='lines', name='Trend Center',
+                            line=dict(
+                                color='rgba(107,114,128,0.45)',
+                                width=1.5,
+                                dash='dash',
+                                shape='spline' if str(trend_mode).startswith("Smoothed") else 'linear'
+                            ),
+                            hoverinfo='skip', showlegend=True
+                        ))
+                        fig_scatter.add_trace(go.Scatter(
+                            x=band_df["ContractDate"], y=band_df["Upper"],
+                            mode='lines', name='Upper Outlier Band',
+                            line=dict(
+                                color='rgba(255,59,48,0.35)',
+                                width=1.6,
+                                shape='spline' if str(trend_mode).startswith("Smoothed") else 'linear'
+                            ),
+                            hoverinfo='skip', showlegend=True
+                        ))
+                        fig_scatter.add_trace(go.Scatter(
+                            x=band_df["ContractDate"], y=band_df["Lower"],
+                            mode='lines', name='Lower Outlier Band',
+                            line=dict(
+                                color='rgba(255,59,48,0.35)',
+                                width=1.6,
+                                shape='spline' if str(trend_mode).startswith("Smoothed") else 'linear'
+                            ),
+                            hoverinfo='skip', showlegend=True
+                        ))
                 fig_scatter.update_layout(
                     xaxis_title="Contract Date",
                     yaxis_title="Sale Price",
@@ -2114,7 +2385,7 @@ def main():
             df_diag["Exclude"] = df_diag["RowID"].isin(st.session_state["excluded_rowids"])
             
             filter_opt = st.radio(
-                "Show:",
+                "Filter records:",
                 ["All Records", "Flagged Only", "Excluded Only"],
                 horizontal=True
             )
@@ -2142,7 +2413,7 @@ def main():
                     "ContractDate": st.column_config.DateColumn("Contract Date", width=110),
                     "SalePrice": st.column_config.NumberColumn("Sale Price", format="$%d", width=100),
                     "FlagReason": st.column_config.TextColumn("Flag", width=90),
-                    "IQR_Outlier": st.column_config.CheckboxColumn("IQR", width=55),
+                    "IQR_Outlier": st.column_config.CheckboxColumn("Band", width=55),
                     "HighLeverage": st.column_config.CheckboxColumn("Lev.", width=55),
                     "HighCooksD": st.column_config.CheckboxColumn("Cook", width=55),
                 },
@@ -2226,6 +2497,8 @@ def main():
 
                 st.session_state["diagnostics_settings"] = {
                     "iqr_multiplier": float(settings.get("iqr_multiplier", 1.0)),
+                    "diag_trend_mode": str(settings.get("diag_trend_mode", "Smoothed (Recommended)")),
+                    "diag_smooth_points": int(settings.get("diag_smooth_points", 9)),
                     "use_cooks": bool(settings.get("use_cooks", False)),
                     "cooks_threshold": float(cooks_threshold_val),
                     "min_sales_per_month": int(settings.get("min_sales_per_month", 5)),
@@ -2310,11 +2583,13 @@ def main():
             vq_stat_card("Data Quality", f"{len(df_model)} sales", delta=f"{len(index_df)} months")
         
         st.markdown("#### Choose Comparable Sales")
+        st.caption("Comparable selection uses Pending Date (contract date).")
 
         df_pick = df_model.copy()
+        df_pick["CompDate"] = df_pick["PendingDate"] if "PendingDate" in df_pick.columns else df_pick["ContractDate"]
         df_pick["Label"] = (
             df_pick["Address"].astype(str) +
-            " | " + df_pick["ContractDate"].astype(str) +
+            " | " + df_pick["CompDate"].astype(str) +
             " | " + df_pick["SoldPrice"].apply(lambda x: f"${x:,.0f}")
         )
 
@@ -2324,17 +2599,17 @@ def main():
             index=0
         )
         if sort_mode == "Contract Date (Newest First)":
-            df_pick = df_pick.sort_values(["ContractDate", "SoldPrice"], ascending=[False, True])
+            df_pick = df_pick.sort_values(["CompDate", "SoldPrice"], ascending=[False, True])
         elif sort_mode == "Contract Date (Oldest First)":
-            df_pick = df_pick.sort_values(["ContractDate", "SoldPrice"], ascending=[True, True])
+            df_pick = df_pick.sort_values(["CompDate", "SoldPrice"], ascending=[True, True])
         elif sort_mode == "Closest to Effective Date":
             eff_date = st.session_state["eff_date"]
-            df_pick["_abs_days"] = df_pick["ContractDate"].apply(lambda d: abs(days_between(d, eff_date)))
-            df_pick = df_pick.sort_values(["_abs_days", "ContractDate"], ascending=[True, False]).drop(columns=["_abs_days"])
+            df_pick["_abs_days"] = df_pick["CompDate"].apply(lambda d: abs(days_between(d, eff_date)))
+            df_pick = df_pick.sort_values(["_abs_days", "CompDate"], ascending=[True, False]).drop(columns=["_abs_days"])
         elif sort_mode == "Sale Price (Low to High)":
-            df_pick = df_pick.sort_values(["SoldPrice", "ContractDate"], ascending=[True, False])
+            df_pick = df_pick.sort_values(["SoldPrice", "CompDate"], ascending=[True, False])
         else:
-            df_pick = df_pick.sort_values(["SoldPrice", "ContractDate"], ascending=[False, False])
+            df_pick = df_pick.sort_values(["SoldPrice", "CompDate"], ascending=[False, False])
 
         label_map = dict(zip(df_pick["RowID"].tolist(), df_pick["Label"].tolist()))
 
@@ -2376,6 +2651,7 @@ def main():
     # ----------------------------
     elif st.session_state["step"] == 5:
         settings = st.session_state["settings"]
+        date_basis = st.session_state.get("date_basis", "Pending Date")
 
         # Auto-save this report to history
         try:
@@ -2473,9 +2749,19 @@ def main():
         if comps.empty:
             st.warning("No comparables are selected. Go back to Step 4 and select at least one comparable.")
         else:
-            comps["Index_Contract"] = comps["ContractDate"].apply(lambda x: lookup_index(index_df, x, math_col)[0])
+            # Comp adjustments use Pending Date (contract date) against effective date.
+            if "PendingDate" in comps.columns:
+                comps["AdjustmentDate"] = comps["PendingDate"]
+            else:
+                comps["AdjustmentDate"] = comps["ContractDate"]
+            missing_adj_dates = int(comps["AdjustmentDate"].isna().sum())
+            if missing_adj_dates > 0:
+                st.warning(f"{missing_adj_dates} selected comparable(s) missing Pending Date; using trend date fallback for those rows.")
+                comps["AdjustmentDate"] = comps["AdjustmentDate"].fillna(comps["ContractDate"])
+
+            comps["Index_Contract"] = comps["AdjustmentDate"].apply(lambda x: lookup_index(index_df, x, math_col)[0])
             comps["Index_Effective"] = eff_index
-            comps["DaysFromEffective"] = comps["ContractDate"].apply(lambda d: days_between(d, eff_date))
+            comps["DaysFromEffective"] = comps["AdjustmentDate"].apply(lambda d: days_between(d, eff_date))
             comps["AppliedAdj"] = comps["DaysFromEffective"] >= int(settings["no_adj_days"])
 
             comps["MktAdjPct"] = comps.apply(
@@ -2491,11 +2777,11 @@ def main():
             comps["Direction"] = comps["MktAdjPct"].apply(adjustment_direction)
 
             out = comps[[
-                "Address", "ContractDate", "SoldPrice",
+                "Address", "AdjustmentDate", "SoldPrice",
                 "Index_Contract", "Index_Effective",
                 "MktAdjPct", "MktAdj$", "Category", "Direction",
                 "AppliedAdj", "DaysFromEffective"
-            ]].copy().rename(columns={"Address": "CompAddress", "SoldPrice": "SalePrice"})
+            ]].copy().rename(columns={"Address": "CompAddress", "AdjustmentDate": "ContractDate", "SoldPrice": "SalePrice"})
 
             out = out.sort_values("ContractDate").reset_index(drop=True)
 
@@ -2527,9 +2813,11 @@ def main():
             st.markdown(f'''
             <div class="vq-hero">
                 <div class="vq-hero-title">\U0001f4cd {_escape(st.session_state["subject_address"])}</div>
-                <div class="vq-hero-sub">Effective Date: {eff_date.strftime("%B %d, %Y")}  \u00b7  Trend: {overall_trend}  \u00b7  Overall Change: {overall_change_pct:+.2f}%</div>
+                <div class="vq-hero-sub">Effective Date: {eff_date.strftime("%B %d, %Y")}  \u00b7  Trend: {overall_trend}  \u00b7  Overall Change: {overall_change_pct:+.2f}%  \u00b7  Trend Basis: {date_basis}  \u00b7  Comp Adj Basis: Pending Date</div>
             </div>
             ''', unsafe_allow_html=True)
+            if date_basis != "Sold Date":
+                st.warning("Report is using Pending Date as timeline basis because Sold Date was not found in the uploaded CSV.")
 
             # ----------------------------
             # TWO-COLUMN: Inspector + Chart/Results
@@ -2662,7 +2950,7 @@ def main():
                             "Address": pdf_table["CompAddress"],
                             "Contract": pdf_table["ContractDate"].astype(str),
                             "Sale": pdf_table["SalePrice"].apply(lambda x: f"${x:,.0f}"),
-                            "Adj %": pdf_table["MktAdjPct"].apply(lambda x: f"{x:+.1f}%"),
+                            "Adj %": pdf_table["MktAdjPct"].apply(lambda x: f"{x:+.2f}%"),
                             "Adj $": pdf_table["MktAdj$"].apply(lambda x: f"${x:+,.0f}"),
                         })
                         pdf_bytes = build_pdf_addendum(
